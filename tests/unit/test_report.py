@@ -2,7 +2,66 @@
 
 import json
 
+import pytest
+
 from mobile_perf import report
+
+
+def _write_csv(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(rows) + "\n", encoding="gb18030")
+
+
+def test_series_from_artifacts_maps_columns_to_keyed_curves(tmp_path):
+    _write_csv(
+        tmp_path / "artifacts" / "performance.csv",
+        [
+            "RecordTime,PSS-main-18390(MB),全局占用(%),SimpleTime",
+            "1792895595000,10.0,5.0,0",
+            "1792895596000,20.0,6.0,1",
+            "1792895598000,30.0,7.0,3",
+        ],
+    )
+
+    series = report.series_from_artifacts(tmp_path / "artifacts")
+
+    pss = series["mem_pss_mb"]
+    assert pss["unit"] == "MB"
+    assert pss["labelZh"] == "应用PSS内存"
+    # x 为相对首个样本的秒数，RecordTime 毫秒转秒
+    assert pss["points"] == [[0.0, 10.0], [1.0, 20.0], [3.0, 30.0]]
+    assert series["cpu_global_pct"]["points"] == [[0.0, 5.0], [1.0, 6.0], [3.0, 7.0]]
+
+
+def test_series_from_artifacts_merges_files_and_skips_unmapped(tmp_path):
+    _write_csv(
+        tmp_path / "artifacts" / "a_memory.csv",
+        ["RecordTime,PSS-main-1(MB),SimpleTime", "1000,10.0,0"],
+    )
+    _write_csv(
+        tmp_path / "artifacts" / "b_memory.csv",
+        ["RecordTime,PSS-main-2(MB),extra,SimpleTime", "2500,20.0,,1.5"],
+    )
+    _write_csv(tmp_path / "artifacts" / "note.txt", ["not a csv"])
+
+    series = report.series_from_artifacts(tmp_path / "artifacts")
+
+    assert series["mem_pss_mb"]["points"] == [[0.0, 10.0], [1.5, 20.0]]
+
+
+def test_series_from_artifacts_without_recordtime_falls_back_to_row_index(tmp_path):
+    _write_csv(
+        tmp_path / "artifacts" / "performance.csv",
+        ["PSS-main-18390(MB),SimpleTime", "10.0,abc", "20.0,def"],
+    )
+
+    series = report.series_from_artifacts(tmp_path / "artifacts")
+
+    assert series["mem_pss_mb"]["points"] == [[0.0, 10.0], [1.0, 20.0]]
+
+
+def test_series_from_artifacts_empty_dir_returns_empty(tmp_path):
+    assert report.series_from_artifacts(tmp_path / "missing") == {}
 
 
 def _meta():
@@ -35,6 +94,175 @@ def test_build_report_contains_session_and_artifacts():
     assert built["marks"] == [{"label": "half_way", "elapsedS": 15.0}]
     # M3 填实：SoloPi/补采/事件三源同时间轴
     assert built["metricsSummary"] is None
+
+
+def test_build_report_enriches_metric_labels_from_dictionary():
+    meta = _meta() | {"deviceProfile": "PICO4-12"}
+    metrics_summary = {
+        "mem_pss_mb": {"unit": "MB", "source": "solo_pi", "median": 42.0, "sampleCount": 3}
+    }
+
+    built = report.build_report(
+        meta=meta,
+        record=_record(),
+        artifacts=["a/performance.csv"],
+        metrics_summary=metrics_summary,
+        series={"mem_pss_mb": {"points": [[0.0, 42.0], [1.0, 43.0]]}},
+        events=[{"kind": "mark", "detail": {}}],
+    )
+
+    assert built["deviceProfile"] == "PICO4-12"
+    entry = built["metricsSummary"]["mem_pss_mb"]
+    assert entry["labelZh"] == "应用PSS内存"
+    assert entry["labelEn"] == "Process PSS memory"
+    # 字典外的指标保留原样，不强行造标签
+    assert built["metricsSummary"]["mem_pss_mb"]["median"] == 42.0
+    assert built["series"]["mem_pss_mb"]["points"] == [[0.0, 42.0], [1.0, 43.0]]
+    # 07 号工单的事件时间轴接入点：数据原样保留，渲染不在本票
+    assert built["events"] == [{"kind": "mark", "detail": {}}]
+
+
+def test_build_report_defaults_series_and_events_to_empty():
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    assert built["series"] == {}
+    assert built["events"] == []
+
+
+def test_write_html_embeds_same_source_data_and_chart_containers(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=["a/performance.csv"],
+        metrics_summary={"mem_pss_mb": {"unit": "MB", "median": 42.0, "sampleCount": 3}},
+        series={"mem_pss_mb": {"unit": "MB", "labelZh": "应用PSS内存", "points": [[0.0, 42.0]]}},
+    )
+    report.write_report(tmp_path, built)
+
+    path = report.write_html(tmp_path, built)
+
+    assert path == tmp_path / "report.html"
+    html = path.read_text(encoding="utf-8")
+    # vendor 离线包整体内嵌（无 CDN）
+    assert "vendor:echarts" in html and "echarts" in html
+    # 图表容器：每个 series key 一个
+    assert 'id="chart-mem_pss_mb"' in html
+    # 双语标签出现在静态汇总表
+    assert "应用PSS内存" in html and "Process PSS memory" in html
+    # 嵌入的 JSON 与 report.json 完全同源
+    embedded = json.loads(_extract_embedded_json(html))
+    on_disk = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert embedded == on_disk == built
+    # 图表脚本必须是立即执行的表达式（曾漏掉调用括号导致图表空白）
+    assert html.count("(function () {") == html.count("})();")
+
+
+def test_write_html_has_no_external_resource_references(tmp_path):
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[], series={})
+
+    path = report.write_html(tmp_path, built)
+
+    html = path.read_text(encoding="utf-8")
+    outside_vendor = _strip_vendor(html)
+    for forbidden in ("http://", "https://", "<script src", "<link ", "url("):
+        assert forbidden not in outside_vendor, forbidden
+
+
+def _extract_embedded_json(html: str) -> str:
+    marker = 'id="report-data">'
+    start = html.index(marker) + len(marker)
+    begin = html.index("window.__REPORT__ =", start) + len("window.__REPORT__ =")
+    end = html.index(";</script>", begin)
+    return html[begin:end].replace("<\\/", "</")
+
+
+def _strip_vendor(html: str) -> str:
+    begin_marker = "<!-- vendor:echarts BEGIN -->"
+    end_marker = "<!-- vendor:echarts END -->"
+    begin = html.index(begin_marker)
+    end = html.index(end_marker) + len(end_marker)
+    return html[:begin] + html[end:]
+
+
+def test_assemble_run_report_from_run_dir_and_store(tmp_path):
+    from mobile_perf.store import PerfStore
+
+    run_dir = tmp_path / "runs" / "run-x"
+    _write_csv(
+        run_dir / "artifacts" / "performance.csv",
+        ["RecordTime,PSS-main-18390(MB),SimpleTime", "1000,10.0,0", "2000,20.0,1"],
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "runId": "run-x",
+                "target": "tv.danmaku.bili",
+                "items": ["Memory"],
+                "serial": "749622c9",
+                "startedAt": "2026-10-25T10:00:00",
+                "stoppedAt": "2026-10-25T10:00:30",
+                "durationS": 30.0,
+                "marks": [],
+                "integrity": {"deviceRowCheck": "skipped"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    store.record_session(
+        {
+            "run_id": "run-x",
+            "target": "tv.danmaku.bili",
+            "device_profile": "PICO4-Android12",
+            "run_dir": str(run_dir),
+        }
+    )
+    store.record_metrics(
+        "run-x",
+        [{"metric_key": "mem_pss_mb", "unit": "MB", "median": 15.0, "sample_count": 2}],
+    )
+    store.record_event("run-x", kind="integrity_warning", detail={"reason": "x"})
+
+    built = report.assemble_run_report("run-x", runs_dir=tmp_path / "runs", store=store)
+
+    assert built["runId"] == "run-x"
+    assert built["deviceProfile"] == "PICO4-Android12"
+    assert built["metricsSummary"]["mem_pss_mb"]["median"] == 15.0
+    assert built["metricsSummary"]["mem_pss_mb"]["labelZh"] == "应用PSS内存"
+    assert built["series"]["mem_pss_mb"]["points"] == [[0.0, 10.0], [1.0, 20.0]]
+    assert [e["kind"] for e in built["events"]] == ["integrity_warning"]
+    assert built["artifacts"] == [str(run_dir / "artifacts" / "performance.csv")]
+
+
+def test_assemble_run_report_without_run_dir_falls_back_to_store(tmp_path):
+    from mobile_perf.store import PerfStore
+
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    store.record_session(
+        {
+            "run_id": "run-lost",
+            "target": "tv.danmaku.bili",
+            "items": ["CPU"],
+            "serial": "749622c9",
+            "started_at": "2026-10-25T10:00:00",
+            "duration_s": 30.0,
+        }
+    )
+
+    built = report.assemble_run_report("run-lost", runs_dir=tmp_path / "runs", store=store)
+
+    assert built["target"] == "tv.danmaku.bili"
+    assert built["series"] == {}
+    assert built["artifacts"] == []
+
+
+def test_assemble_run_report_unknown_run_raises(tmp_path):
+    from mobile_perf.store import PerfStore
+
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    with pytest.raises(report.RunNotFoundError):
+        report.assemble_run_report("run-none", runs_dir=tmp_path / "runs", store=store)
 
 
 def test_write_report_round_trip(tmp_path):
