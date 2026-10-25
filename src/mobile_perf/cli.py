@@ -106,16 +106,20 @@ def _resolve_serial(explicit: str | None, adb_path: str) -> str | None:
     return first_online_device(adb_path)
 
 
+def _build_kit(kit_factory, **kwargs):
+    """kit 构造公共口：测试注入 kit_factory，否则走真实 PerfKit。"""
+    if kit_factory is not None:
+        return kit_factory(**kwargs)
+    return PerfKit(**kwargs)
+
+
 def _run_doctor(args: argparse.Namespace, kit_factory=None) -> int:
     adb_path = str(resolve_adb(args.adb))
     serial = _resolve_serial(args.serial, adb_path)
     if not serial:
         print("[mobile-perf] 未找到在线设备，请用 --serial 指定", file=sys.stderr)
         return 1
-    if kit_factory is not None:
-        kit = kit_factory(adb_path=adb_path, serial=serial)
-    else:
-        kit = PerfKit(adb_path=adb_path, serial=serial)
+    kit = _build_kit(kit_factory, adb_path=adb_path, serial=serial)
     try:
         report = kit.ensure_ready()
     except GateBusyError as exc:
@@ -141,16 +145,13 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
         print("[mobile-perf] --items 至少需要一个采集项", file=sys.stderr)
         return 1
 
-    if kit_factory is not None:
-        kit = kit_factory(
-            adb_path=adb_path, serial=serial, runs_dir=args.runs_dir,
-            device_profile=args.device_profile,
-        )
-    else:
-        kit = PerfKit(
-            adb_path=adb_path, serial=serial, runs_dir=args.runs_dir,
-            device_profile=args.device_profile,
-        )
+    kit = _build_kit(
+        kit_factory,
+        adb_path=adb_path,
+        serial=serial,
+        runs_dir=args.runs_dir,
+        device_profile=args.device_profile,
+    )
 
     try:
         report = kit.run_collect(
@@ -213,18 +214,10 @@ def _run_report(args: argparse.Namespace, kit_factory=None) -> int:
             print(f"[mobile-perf] report 失败: --threshold 参数错误: {exc}", file=sys.stderr)
             return 1
         adb_path = str(resolve_adb(getattr(args, "adb", None)))
-        serial = session.get("serial") or _resolve_serial(None, adb_path)
-        if not serial:
-            print(
-                "[mobile-perf] report 失败: 无法确定设备 serial（judge 门面构造需要，"
-                "仅用于构造 kit，判定本身只读库不连设备）",
-                file=sys.stderr,
-            )
-            return 1
-        if kit_factory is not None:
-            kit = kit_factory(adb_path=adb_path, serial=serial, db_path=args.db)
-        else:
-            kit = PerfKit(adb_path=adb_path, serial=serial, db_path=args.db)
+        # 只读判定（B4）：serial 取 run 记录即可，未记录时以 None 构造（不触设备）
+        kit = _build_kit(
+            kit_factory, adb_path=adb_path, db_path=args.db, serial=session.get("serial")
+        )
         try:
             spec = JudgeSpec(baseline=args.baseline, thresholds=thresholds)
         except ValueError as exc:
@@ -254,18 +247,11 @@ def _run_report(args: argparse.Namespace, kit_factory=None) -> int:
 
 def _run_trend(args: argparse.Namespace, kit_factory=None) -> int:
     adb_path = str(resolve_adb(args.adb))
-    serial = _resolve_serial(args.serial, adb_path)
-    if not serial:
-        print(
-            "[mobile-perf] 无法确定设备 serial：无 --serial、无 MOBILE_PERF_SERIAL，"
-            "且当前不是恰好一台设备在线（趋势只读库，serial 仅用于构造 kit）",
-            file=sys.stderr,
-        )
-        return 1
-    if kit_factory is not None:
-        kit = kit_factory(adb_path=adb_path, serial=serial, db_path=args.db)
-    else:
-        kit = PerfKit(adb_path=adb_path, serial=serial, db_path=args.db)
+    # 只读趋势（B4）：不强制 serial——不探测在线设备，显式传入才注入
+    kwargs: dict = {"adb_path": adb_path, "db_path": args.db}
+    if args.serial:
+        kwargs["serial"] = args.serial
+    kit = _build_kit(kit_factory, **kwargs)
     try:
         trend = kit.trend(args.pkg, args.metric, profile=args.profile)
     except ProfileMismatchError as exc:

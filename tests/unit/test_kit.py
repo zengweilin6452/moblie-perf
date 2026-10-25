@@ -251,11 +251,6 @@ def test_run_collect_fails_when_pull_artifacts_missing(tmp_path):
         )
 
 
-def test_kit_requires_serial_for_collect(tmp_path):
-    with pytest.raises(ValueError, match="serial"):
-        PerfKit(adb_path=fake_adb(tmp_path), serial=None)
-
-
 def test_kit_resolves_adb_by_three_level_rule(tmp_path):
     kit = PerfKit(adb_path=fake_adb(tmp_path), serial="749622c9")
 
@@ -1093,3 +1088,32 @@ def test_run_collect_marks_battery_metrics_not_tested_when_charging(tmp_path):
     assert json.loads(
         (tmp_path / "runs" / "run-chg-1" / "report.json").read_text(encoding="utf-8")
     )["metricsSummary"]["battery_current_ma"]["notTested"] is True
+
+
+def test_kit_allows_serial_none_for_read_only_use(tmp_path):
+    """B4：serial=None 仅限不触设备的用途（judge/trend 门面）；触设备入口仍拒绝。"""
+    from mobile_perf.store import PerfStore as _Store
+
+    store = _Store(tmp_path / "data" / "mobile_perf.db")
+    store.record_session({"run_id": "run-ro", "target": "tv.danmaku.bili"})
+    store.record_metrics(
+        "run-ro",
+        [{"metric_key": "mem_pss_mb", "unit": "MB", "median": 20.0, "sample_count": 3}],
+    )
+    kit = PerfKit(
+        adb_path=fake_adb(tmp_path),
+        serial=None,
+        runs_dir=tmp_path / "runs",
+        store=store,
+        gate=FileLockGate(tmp_path / "gate-leases"),
+        backend=FakeHarnessBackend(),
+    )
+
+    assert kit.trend("tv.danmaku.bili", "mem_pss_mb")["runs"]
+
+    with pytest.raises(ValueError, match="serial"):
+        kit.ensure_ready()
+    with pytest.raises(ValueError, match="serial"):
+        kit.collect(target="tv.danmaku.bili", items=["CPU"])
+    with pytest.raises(ValueError, match="serial"):
+        kit.run_collect(target="tv.danmaku.bili", items=["CPU"], duration_s=1.0)

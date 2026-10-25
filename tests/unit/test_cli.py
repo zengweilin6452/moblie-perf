@@ -609,3 +609,56 @@ def test_serve_command_is_reserved_placeholder(capsys):
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "预留" in captured.out + captured.err
+
+
+def test_trend_command_without_serial_reads_store_only(tmp_path, capsys):
+    """B4：trend 只读库不强制 serial——无 --serial 也应可用。"""
+    trend_payload = {"pkg": "tv.danmaku.bili", "metric": "mem_pss_mb", "runs": []}
+    captured = {}
+
+    class TrendStubKit(StubKit):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captured["serial"] = kwargs.get("serial")
+
+        def trend(self, pkg, metric, profile=None):
+            return trend_payload
+
+    exit_code = cli.main(
+        ["trend", "tv.danmaku.bili", "--metric", "mem_pss_mb", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: TrendStubKit(**kwargs),
+    )
+
+    assert exit_code == 0
+    assert captured["serial"] is None  # 只读命令不再注入/探测设备 serial
+    assert json.loads(capsys.readouterr().out) == trend_payload
+
+
+def test_report_baseline_without_serial_judges_from_session_record(tmp_path, capsys):
+    """B4：report --baseline 不再强制 serial；真实 PerfKit(serial=None) 仅判库。"""
+    db, store = _make_report_fixture(tmp_path)
+    store.record_baseline(
+        name="bili-home-v3", metric_key="mem_pss_mb", value=180.0
+    )
+    store.close()
+
+    exit_code = cli.main(
+        [
+            "report",
+            "run-cli-judge",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--db",
+            str(db),
+            "--baseline",
+            "bili-home-v3",
+            "--threshold",
+            "mem_pss_mb:lt:220:fail",
+            "--adb",
+            fake_adb(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["verdict"]["verdict"] == "passed"

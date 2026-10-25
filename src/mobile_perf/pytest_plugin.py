@@ -242,6 +242,12 @@ def mobile_perf_kit(request: pytest.FixtureRequest):
         "mobile_perf_serial"
     )
     kwargs: dict[str, Any] = {"serial": serial or None}
+    if not kwargs["serial"]:
+        # kit 本身允许 serial=None（只读门面），但 perf fixture 必然触设备，快速失败
+        raise pytest.UsageError(
+            "--mobile-perf 需要设备 serial（--mobile-perf-serial 或 ini "
+            "mobile_perf_serial）；宿主也可 conftest 覆盖 mobile_perf_kit"
+        )
     if config.getoption("--mobile-perf-runs-dir"):
         kwargs["runs_dir"] = config.getoption("--mobile-perf-runs-dir")
     if config.getoption("--mobile-perf-db"):

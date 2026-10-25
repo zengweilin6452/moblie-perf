@@ -423,8 +423,8 @@ class PerfKit:
         dialog_dismiss: Callable[[], dict[str, Any]] | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
-        if not serial:
-            raise ValueError("必须提供设备 serial（显式参数或 CLI/env 解析）")
+        # serial 允许 None：仅限不触设备的用途（judge/trend 等只读门面，B4）；
+        # 触设备入口（ensure_ready/collect）在使用时校验
         self.serial = serial
         self._repo_root = Path(repo_root) if repo_root is not None else default_repo_root()
         self.runs_dir = Path(runs_dir) if runs_dir is not None else self._repo_root / "runs"
@@ -586,6 +586,8 @@ class PerfKit:
         needs_attention（无障碍假开启），供编排层降级与告警；事件随报告返回，
         入库由持有 store 的编排层完成。
         """
+        if not self.serial:
+            raise ValueError("必须提供设备 serial（显式参数或 CLI/env 解析）")
         if self._keeper is None:
             from .keeper import default_call_device, default_dialog_probe, default_run_doctor
 
@@ -872,6 +874,8 @@ class PerfKit:
                 supplement = spec.supplement
             if supplement_interval_s is _UNSET:
                 supplement_interval_s = spec.supplement_interval_s
+        if not self.serial:
+            raise ValueError("必须提供设备 serial（显式参数或 CLI/env 解析）")
         if target is _UNSET or items is _UNSET:
             raise TypeError("collect 需要 SessionSpec 或显式 target=/items= 参数")
         if host_run_id is _UNSET:

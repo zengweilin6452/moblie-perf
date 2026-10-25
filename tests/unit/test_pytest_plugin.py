@@ -280,3 +280,11 @@ def test_mobile_perf_baseline_marker_is_registered(pytester):
     pytester.makepyfile(_MARKER_TEST)
     result = pytester.runpytest("--mobile-perf-baseline", "bili-global", "--strict-markers")
     result.assert_outcomes(passed=2)
+
+
+def test_perf_missing_serial_fails_fast_with_usage_error(pytester):
+    """B4 配套：--mobile-perf 开着但没有 serial 时快速失败（kit 只读放宽不改变此行为）。"""
+    pytester.makepyfile("def test_inner(perf):\n    pass\n")
+    result = pytester.runpytest("--mobile-perf")
+    result.assert_outcomes(errors=1)
+    result.stdout.fnmatch_lines(["*mobile-perf-serial*"])
