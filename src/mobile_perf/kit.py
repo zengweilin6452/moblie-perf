@@ -264,19 +264,50 @@ class PerfKit:
             "runs": runs,
         }
 
+    def _measure_clock_offset_s(self) -> float | None:
+        """无巡检结论时短事务实测 device-host 时钟偏移（对时兜底，keeper 同口径）。"""
+        adb_path = str(self.adb_path)
+        runner = self._adb_runner
+
+        def raw_call(args: list[str], timeout_s: float = 10.0) -> Any:
+            if runner is not None:
+                return runner([adb_path, *args], timeout_s)
+            return supplement_module.default_call_device(adb_path)(args, timeout_s)
+
+        try:
+            result = self._borrowed(
+                "mobile_perf.clock",
+                lambda: raw_call(["-s", self.serial, "shell", "date", "+%s"], 10.0),
+            )
+            device_epoch = supplement_module.parse_device_epoch(result.stdout or "")
+        except Exception:  # noqa: BLE001 - 测不到偏移就退回假设已同步
+            return None
+        return time.time() - device_epoch if device_epoch is not None else None
+
     def _start_supplement(
         self, enabled: bool, interval_s: float
     ) -> supplement_module.SupplementPoller | None:
         """按巡检结论构造并启动补采轮询器（紧随 session.start，起点即会话起点）。
 
-        巡检 clock_offset_s 为统一时间轴换算基准（未巡检按 0）；充电降级
+        对时基准：巡检 clock_offset_s 优先；无巡检结论则短事务实测；实测失败
+        退回 0（假设已同步，偏差如实留在 meta 供判读）。充电降级
         （degraded_items 含 Temperature）时温度补采跳过。轮询器不持 gate 设备权。
         """
         if not enabled:
             return None
         readiness = self.last_readiness
-        offset = readiness.clock_offset_s if readiness is not None else None
+        keeper_offset = (
+            readiness.clock_offset_s
+            if readiness is not None and readiness.clock_offset_s is not None
+            else None
+        )
         charging = bool(readiness is not None and "Temperature" in readiness.degraded_items)
+        if keeper_offset is not None:
+            offset, offset_source = keeper_offset, "keeper"
+        else:
+            measured = self._measure_clock_offset_s()
+            offset = measured if measured is not None else 0.0
+            offset_source = "measured" if measured is not None else "assumed"
         call = None
         if self._adb_runner is not None:
             adb_path = str(self.adb_path)
@@ -288,10 +319,11 @@ class PerfKit:
             adb_path=str(self.adb_path),
             serial=self.serial,
             interval_s=interval_s,
-            clock_offset_s=offset if offset is not None else 0.0,
+            clock_offset_s=offset,
             collect_temperature=not charging,
             call_device=call,
         )
+        self._supplement_offset = (offset, offset_source)
         poller.start()
         return poller
 
@@ -334,17 +366,18 @@ class PerfKit:
             clock=self._clock,
         )
         session.start()
+        self._supplement_offset = (0.0, "assumed")
         poller = self._start_supplement(supplement, supplement_interval_s)
         supplement_result = None
         try:
             self._sleep(duration_s)
         finally:
-            try:
-                # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
-                record = session.stop(str(artifacts_dir))
-            finally:
-                if poller is not None:
-                    supplement_result = poller.stop()
+            # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
+            # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
+            if poller is not None:
+                supplement_result = poller.stop()
+            # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
+            record = session.stop(str(artifacts_dir))
 
         artifact_files = collector.validate_artifacts(artifacts_dir)
 
@@ -389,7 +422,8 @@ class PerfKit:
                     "rounds": supplement_result.rounds,
                     "errors": supplement_result.errors,
                     "degraded": supplement_result.degraded,
-                    "clockOffsetS": poller.clock_offset_s if poller else None,
+                    "clockOffsetS": self._supplement_offset[0],
+                    "clockOffsetSource": self._supplement_offset[1],
                 }
             )
             if supplement_result.samples:

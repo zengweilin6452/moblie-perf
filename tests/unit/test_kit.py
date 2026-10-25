@@ -536,6 +536,7 @@ def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path
 
     assert probe.borrows == [
         ("749622c9", "mobile_perf.start"),
+        ("749622c9", "mobile_perf.clock"),  # 无巡检结论时补采对时短借用
         ("749622c9", "mobile_perf.stop_pull"),
     ]
     assert backend.held_at_command == [("start", True), ("stop", True)]
@@ -690,3 +691,51 @@ class TestRunCollectSupplement:
         assert meta["supplement"]["enabled"] is False
         rows = {row["metric_key"] for row in store.fetch_metrics("run-nosupplement")}
         assert "temp_battery_c" not in rows
+
+
+class TestRunCollectClockSync:
+    """无巡检结论时 run_collect 实测 device-host 时钟偏移作补采对时基准。"""
+
+    def test_offset_measured_when_no_readiness(self, tmp_path):
+        import time as time_module
+
+        now_epoch = int(time_module.time())
+        stdout = (
+            f"{now_epoch}\n"
+            "Current Battery Service state:\n"
+            "  temperature: 285\n"
+            "GPU Utilization (last 1s): 30%\n"
+        )
+        adb = FakeSupplementAdb(stdout=stdout)
+        kit, store, report = run_collect_with_supplement(
+            tmp_path, adb, sleep=lambda seconds: time_module.sleep(0.3)
+        )
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-supplement-1") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["clockOffsetSource"] == "measured"
+        assert abs(meta["supplement"]["clockOffsetS"]) < 5.0
+
+    def test_keeper_offset_preferred_over_measurement(self, tmp_path):
+
+        adb = FakeSupplementAdb()
+        store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+        kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
+        kit.last_readiness = type(
+            "R", (), {"clock_offset_s": 1.5, "degraded_items": ()}
+        )()
+        kit.run_collect(
+            target="tv.danmaku.bili",
+            items=["CPU"],
+            duration_s=0.5,
+            host_run_id="run-offset-keeper",
+            runs_dir=tmp_path / "runs",
+            supplement_interval_s=0.05,
+        )
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-offset-keeper") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["clockOffsetSource"] == "keeper"
+        assert meta["supplement"]["clockOffsetS"] == 1.5
