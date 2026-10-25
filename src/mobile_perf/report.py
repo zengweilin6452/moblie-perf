@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import collector
+from . import jank as jank_module
 from . import metrics as metrics_module
 
 SCHEMA_VERSION = 1
@@ -146,13 +147,16 @@ def build_report(
     integrity: dict[str, Any] | None = None,
     series: dict[str, Any] | None = None,
     events: list[dict[str, Any]] | None = None,
+    jank_thresholds_ms: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典（JSON 与 HTML 共用）。
 
     metrics_summary 的每个指标补充双语标签（来自指标字典）；series 为
     {canonical key: 曲线数据}；events 只保留数据，渲染由后续工单接入。
+    jank_thresholds_ms 为卡顿分级阈值（宿主可覆盖，缺省组件默认口径）；
+    仅当报告含分级指标时记录口径元信息（ticket 14）。
     """
-    return {
+    report = {
         "schemaVersion": SCHEMA_VERSION,
         "runId": meta["runId"],
         "target": meta["target"],
@@ -172,6 +176,15 @@ def build_report(
         "startup": meta.get("startup"),
         "integrity": integrity,
     }
+    if any(key in (metrics_summary or {}) for key in jank_module.GRADE_METRIC_KEYS.values()):
+        report["jank"] = {
+            "sourceMetric": jank_module.SOURCE_METRIC_KEY,
+            "granularity": "per_sampling_window",
+            "thresholdsMs": jank_module.validate_thresholds(
+                jank_thresholds_ms or jank_module.DEFAULT_THRESHOLDS_MS
+            ),
+        }
+    return report
 
 
 def _with_metric_labels(
@@ -291,6 +304,8 @@ def assemble_run_report(
         integrity=meta.get("integrity"),
         series=series_from_artifacts(artifacts_dir),
         events=store.fetch_events(run_id),
+        # 自定义分级阈值随 meta.json 持久化，重组报告时沿用（口径不漂移）
+        jank_thresholds_ms=(meta.get("jank") or {}).get("thresholdsMs"),
     )
 
 
@@ -325,6 +340,7 @@ th {{ background: #f2f4f8; }}
 <h2>会话元信息</h2>
 <table class="meta">{meta_rows}</table>
 {startup_markup}
+{jank_markup}
 <h2>聚合统计</h2>
 <table>
 <tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
@@ -363,6 +379,7 @@ th {{ background: #f2f4f8; }}
       grid: {{ left: 60, right: 24, top: 40, bottom: 40 }}
     }};
 __STARTUP_MARKLINE__
+__JANK_THRESHOLD_LINE__
     chart.setOption(option);
   }});
 }})();
@@ -413,6 +430,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         run_id=html_escape(report["runId"]),
         meta_rows=meta_rows,
         startup_markup=_startup_markup(report),
+        jank_markup=_jank_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
@@ -421,6 +439,9 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
     )
     # 启动点标记按需注入（占位符在 format 之后替换，避免花括号转义）
     html_text = html_text.replace("__STARTUP_MARKLINE__", _startup_markline_script(report))
+    html_text = html_text.replace(
+        "__JANK_THRESHOLD_LINE__", _jank_threshold_line_script(report)
+    )
     path = Path(run_dir) / "report.html"
     path.write_text(html_text, encoding="utf-8")
     return path
@@ -528,6 +549,72 @@ def _startup_markup(report: dict[str, Any]) -> str:
         f'<h2>启动时间 / Startup</h2><p>{header}：<b>{_fmt(ms)} ms</b>'
         + (f"（{detail}）" if detail else "")
         + "</p>"
+    )
+
+
+# 卡顿分级小节（ticket 14）：三档阈值线与口径说明。阈值归宿主时由报告
+# 数据带出（report["jank"]["thresholdsMs"]），缺省用组件默认口径。
+_JANK_GRADE_LABELS = {
+    jank_module.GRADE_LIGHT: ("轻度", "Light"),
+    jank_module.GRADE_HEAVY: ("重度", "Heavy"),
+    jank_module.GRADE_SEVERE: ("严重", "Severe"),
+}
+
+
+def _jank_thresholds(report: dict[str, Any]) -> dict[str, float]:
+    configured = (report.get("jank") or {}).get("thresholdsMs") or {}
+    return {**jank_module.DEFAULT_THRESHOLDS_MS, **configured}
+
+
+def _jank_entries(report: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    summary = report.get("metricsSummary") or {}
+    return [
+        (grade, summary[key])
+        for grade, key in jank_module.GRADE_METRIC_KEYS.items()
+        if key in summary
+    ]
+
+
+def _jank_markup(report: dict[str, Any]) -> str:
+    """卡顿分级小节：三档计数 + 口径说明；无分级指标返回空串。"""
+    entries = _jank_entries(report)
+    if not entries:
+        return ""
+    thresholds = _jank_thresholds(report)
+    rows = []
+    for grade, entry in entries:
+        zh, en = _JANK_GRADE_LABELS[grade]
+        label = f"{zh}卡顿窗口数(>{_fmt(thresholds[grade])}ms) / {en} jank windows"
+        rows.append(
+            "<tr><td>{label}</td><td>{count}</td><td>{samples}</td></tr>".format(
+                label=html_escape(label),
+                count=_fmt(entry.get("max")),
+                samples=entry.get("sampleCount", ""),
+            )
+        )
+    return (
+        "<h2>卡顿分级 / Jank grading</h2>"
+        '<table class="jank-threshold"><tr><th>分级 / Grade</th><th>窗口数 / Windows</th>'
+        "<th>样本数 / Samples</th></tr>{rows}</table>"
+        "<p>口径 / Method：SoloPi 无逐帧延迟分布，按每个采样窗口的"
+        "「最长延迟时间」是否超过阈值计数（分桶互斥，只计最高档）。</p>"
+    ).format(rows="\n".join(rows))
+
+
+def _jank_threshold_line_script(report: dict[str, Any]) -> str:
+    """最长延迟曲线上的三档阈值线（仅当该曲线存在时注入）。"""
+    if "frame_delay_max_ms" not in (report.get("series") or {}):
+        return ""
+    thresholds = _jank_thresholds(report)
+    lines = ", ".join(
+        f'{{ yAxis: {_fmt(thresholds[grade])}, lineStyle: {{ type: "dashed" }}, '
+        f'label: {{ formatter: "{_fmt(thresholds[grade])} ms", fontSize: 10 }} }}'
+        for grade in jank_module.GRADES
+    )
+    return (
+        'if (key === "frame_delay_max_ms" && typeof option !== "undefined") {\n'
+        '    option.series[0].markLine = { symbol: "none", data: [' + lines + "] };\n"
+        "  }\n  "
     )
 
 
