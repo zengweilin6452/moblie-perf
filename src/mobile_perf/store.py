@@ -210,6 +210,36 @@ class PerfStore:
         )
         return [dict(zip([d[0] for d in cursor.description], row, strict=True)) for row in cursor]
 
+    def fetch_metric_series(
+        self,
+        target: str,
+        metric_key: str,
+        profile: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """同包（可选同档案）某指标的跨 run 序列，按 startedAt 升序（ticket 13）。
+
+        每条为 sessions 与 metrics 的连接行：run_id/started_at/duration_s/
+        device_profile/serial + 聚合值。无该指标聚合的 run 不出现。
+        """
+        sql = (
+            "SELECT s.run_id, s.started_at, s.duration_s, s.device_profile, s.serial, "
+            "m.min, m.median, m.mean, m.max, m.p90, m.sample_count "
+            "FROM sessions s JOIN metrics m ON m.run_id = s.run_id "
+            "WHERE s.target_pkg = ? AND m.metric_key = ?"
+        )
+        params: list[Any] = [target, metric_key]
+        if profile is not None:
+            sql += " AND s.device_profile = ?"
+            params.append(profile)
+        sql += " ORDER BY s.started_at ASC LIMIT ?"
+        params.append(limit)
+        cursor = self._conn.execute(sql, params)
+        return [
+            dict(zip([d[0] for d in cursor.description], row, strict=True))
+            for row in cursor
+        ]
+
     def record_event(
         self,
         run_id: str,
