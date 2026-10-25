@@ -32,6 +32,10 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         # 启动编排指标（ticket 12，source=pc_orchestration）
         "app_cold_start_ms",
         "app_warm_start_ms",
+        # 卡顿分级（ticket 14，source=solo_pi 的同源派生统计）
+        "app_jank_light_count",
+        "app_jank_heavy_count",
+        "app_jank_severe_count",
     }
 
     assert set(metrics.METRICS) == expected

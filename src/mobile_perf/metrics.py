@@ -134,6 +134,21 @@ METRICS: dict[str, MetricSpec] = {
         # 计得，单样本入库（聚合字段填单值）；无 SoloPi 原始列
         MetricSpec("app_cold_start_ms", "ms", "pc_orchestration", "冷启动耗时", "Cold start time"),
         MetricSpec("app_warm_start_ms", "ms", "pc_orchestration", "温启动耗时", "Warm start time"),
+        # 卡顿分级（ticket 14）：同源派生统计——对 SoloPi「最长延迟时间」逐采样
+        # 窗口值按阈值分桶计数（>100/>300/>700 ms 默认，宿主可覆盖），非逐帧
+        # 数据（SoloPi CSV 无逐帧延迟分布，口径偏差见 jank.py 模块文档）
+        MetricSpec(
+            "app_jank_light_count", "次", "solo_pi",
+            "轻度卡顿窗口数(>100ms)", "Light jank windows (>100ms)",
+        ),
+        MetricSpec(
+            "app_jank_heavy_count", "次", "solo_pi",
+            "重度卡顿窗口数(>300ms)", "Heavy jank windows (>300ms)",
+        ),
+        MetricSpec(
+            "app_jank_severe_count", "次", "solo_pi",
+            "严重卡顿窗口数(>700ms)", "Severe jank windows (>700ms)",
+        ),
     )
 }
 

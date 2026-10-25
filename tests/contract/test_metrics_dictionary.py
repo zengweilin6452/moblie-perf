@@ -120,3 +120,30 @@ def test_key_naming_convention_snake_case():
     for spec in metrics.METRICS.values():
         parts = spec.key.split("_")
         assert len(parts) >= 2 and all(p.isalnum() and p.islower() for p in parts), spec.key
+
+
+# ---- ticket 14：卡顿分级派生指标（无 SoloPi 原始列，同源派生统计） ----
+
+
+def test_jank_grading_keys_are_derived_from_locked_max_delay_column():
+    """分级 key 不映射任何原始列：由「最长延迟时间(ms)」派生，来源列必须已锁定。"""
+    from mobile_perf import jank
+
+    assert metrics.column_to_metric("最长延迟时间(ms)").key == jank.SOURCE_METRIC_KEY
+    for key in jank.GRADE_METRIC_KEYS.values():
+        spec = metrics.METRICS[key]
+        assert spec.solo_columns == () and spec.solo_shapes == ()
+        assert spec.source == "solo_pi"
+        assert spec.unit == "次"
+
+
+def test_real_csv_granularity_is_per_window_not_per_frame():
+    """粒度契约：真实 FPS 延迟列只有 count/ratio/max 三列，无逐帧延迟分布。
+
+    上游若新增逐帧分布列，本测试会提示分级口径可升级（当前口径为窗口级）。
+    """
+    value_columns = {
+        _value_column(path)
+        for path in FIXTURES.glob("*_FPS_*.csv")
+    }
+    assert value_columns == {"帧率(帧)", "延迟占比(%)", "延迟次数(次)", "最长延迟时间(ms)"}
