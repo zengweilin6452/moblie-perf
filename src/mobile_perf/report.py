@@ -14,6 +14,8 @@ def build_report(
     meta: dict[str, Any],
     record: dict[str, Any],
     artifacts: list[str],
+    metrics_summary: dict[str, Any] | None = None,
+    integrity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典。"""
     return {
@@ -29,8 +31,9 @@ def build_report(
         "soloSessionId": record.get("sessionId"),
         "marks": record.get("marks", []),
         "artifacts": artifacts,
+        "metricsSummary": metrics_summary,
+        "integrity": integrity,
         # M3 填实：SoloPi / pc_supplement / events 三源同时间轴聚合
-        "metricsSummary": None,
     }
 
 

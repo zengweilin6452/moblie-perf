@@ -11,7 +11,7 @@ from mobile_perf.store import PerfStore
 
 
 class FakeHarnessBackend:
-    """模拟 Harness 后端：start 返回固定 sessionId，stop 造一份产物 CSV。"""
+    """模拟 Harness 后端：start 返回固定 sessionId，stop 造一份 SoloPi 格式 CSV。"""
 
     def __init__(self):
         self.started = []
@@ -24,8 +24,11 @@ class FakeHarnessBackend:
     def stop(self, session_id, output_dir):
         self.stopped.append((session_id, output_dir))
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        csv_path = Path(output_dir) / "performance.csv"
-        csv_path.write_text("时间,CPU\n0,1.0\n", encoding="utf-8")
+        rows = ["RecordTime,PSS-main-18390(MB),extra,SimpleTime"]
+        rows += [f"{1792895595000 + i},{42.0 + i},,{i}" for i in range(3)]
+        Path(output_dir).joinpath("performance.csv").write_text(
+            "\n".join(rows) + "\n", encoding="gb18030"
+        )
         return {
             "success": True,
             "state": "stopped",
@@ -163,6 +166,166 @@ def test_kit_resolves_adb_by_three_level_rule(tmp_path):
     assert kit.adb_path == Path(fake_adb(tmp_path))
 
 
+
+class SoloPiCsvBackend(FakeHarnessBackend):
+    """stop 产出真实格式的 GBK CSV，并声称设备端目录 outputPath。"""
+
+    REMOTE = "/sdcard/Android/data/tv.danmaku.bili/files/records/performance-abc123"
+
+    def stop(self, session_id, output_dir):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        rows = ["RecordTime,PSS-main-18390(MB),extra,SimpleTime"]
+        rows += [f"{1792895595000 + i},{value},,{i}" for i, value in enumerate([10, 20, 30])]
+        (Path(output_dir) / "PSS-main-18390_Memory_x.csv").write_text(
+            "\n".join(rows) + "\n", encoding="gb18030"
+        )
+        return {
+            "success": True,
+            "state": "stopped",
+            "sessionId": session_id,
+            "outputPath": self.REMOTE,
+        }
+
+
+class FakeDeviceAdb:
+    """模拟 adb：按文件名返回行数（默认与本地一致），记录 rm 命令。"""
+
+    def __init__(self, overrides=None):
+        self.overrides = overrides or {}
+        self.removed = []
+
+    def __call__(self, cmd, timeout_s):
+        class Result:
+            def __init__(self, stdout, returncode):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        if "ls" in cmd:
+            return Result("PSS-main-18390_Memory_x.csv\n", 0)
+        if "wc" in cmd:
+            lines = 4 + self.overrides.get("delta", 0)  # 表头 1 行 + 数据 3 行
+            remote_base = SoloPiCsvBackend.REMOTE
+            return Result(f"{lines} {remote_base}/PSS-main-18390_Memory_x.csv\n", 0)
+        if "rm" in cmd:
+            self.removed.append(cmd[-1])
+            return Result("", 0)
+        return Result("", 1)
+
+
+def make_solopi_kit(tmp_path, backend, adb_runner=None, **kwargs):
+    clocks = iter([0.0, 30.0])
+    adb_path = fake_adb(tmp_path)
+    kwargs.setdefault("adb_path", adb_path)
+    kwargs.setdefault("serial", "749622c9")
+    kwargs.setdefault("runs_dir", tmp_path / "runs")
+    kwargs.setdefault("backend", backend)
+    kwargs.setdefault("clock", lambda: next(clocks))
+    kwargs.setdefault("sleep", lambda seconds: None)
+    kwargs.setdefault("store", PerfStore(tmp_path / "data" / "mobile_perf.db"))
+    if adb_runner is not None:
+        kwargs.setdefault("adb_runner", adb_runner)
+    return PerfKit(**kwargs)
+
+
+def test_run_collect_aggregates_metrics_into_store_and_report(tmp_path):
+    backend = SoloPiCsvBackend()
+    adb = FakeDeviceAdb()
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_solopi_kit(tmp_path, backend, adb_runner=adb, store=store)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["Memory"],
+        duration_s=30.0,
+        host_run_id="run-20261025-100000-abcd",
+        runs_dir=tmp_path / "runs",
+    )
+
+    rows = store.fetch_metrics("run-20261025-100000-abcd")
+    assert len(rows) == 1
+    assert rows[0]["metric_key"] == "mem_pss_mb"
+    assert rows[0]["min"] == 10.0
+    assert rows[0]["median"] == 20.0
+    assert rows[0]["max"] == 30.0
+    assert rows[0]["sample_count"] == 3
+
+    assert report["metricsSummary"]["mem_pss_mb"]["median"] == 20.0
+    assert report["metricsSummary"]["mem_pss_mb"]["sampleCount"] == 3
+    assert report["integrity"]["deviceRowCheck"] == "passed"
+    assert report["integrity"]["deviceDirRemoved"] is True
+
+    assert adb.removed == [backend.REMOTE]  # 校验通过才删设备端
+    artifacts = store.fetch_run_artifacts("run-20261025-100000-abcd")
+    assert artifacts  # 产物目录入 runs_artifacts
+
+
+def test_run_collect_keeps_device_dir_and_alarms_on_row_mismatch(tmp_path):
+    backend = SoloPiCsvBackend()
+    adb = FakeDeviceAdb(overrides={"delta": 5})  # 设备端比本地多 5 行
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_solopi_kit(tmp_path, backend, adb_runner=adb, store=store)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["Memory"],
+        duration_s=30.0,
+        host_run_id="run-20261025-100000-abcd",
+        runs_dir=tmp_path / "runs",
+    )
+
+    assert adb.removed == []  # 行数不一致保留设备端
+    assert report["integrity"]["deviceRowCheck"] == "failed"
+    assert report["integrity"]["deviceDirRemoved"] is False
+
+    events = store.fetch_events("run-20261025-100000-abcd")
+    assert [e["kind"] for e in events] == ["integrity_warning"]
+    assert events[0]["detail"]["reason"] == "row_count_mismatch"
+    assert events[0]["detail"]["deviceDirKept"] is True
+
+    # 本地已拉到的数据仍聚合入库
+    assert store.fetch_metrics("run-20261025-100000-abcd")
+
+
+def test_run_collect_skips_device_probe_without_remote_path(tmp_path):
+    backend = FakeHarnessBackend()  # 旧载荷：无 outputPath
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_solopi_kit(tmp_path, backend, store=store)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-no-remote",
+        runs_dir=tmp_path / "runs",
+    )
+
+    assert report["integrity"]["deviceRowCheck"] == "skipped"
+    assert store.fetch_events("run-no-remote") == []
+
+
+def test_run_collect_enforces_local_retention(tmp_path):
+    backend = FakeHarnessBackend()
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_solopi_kit(tmp_path, backend, store=store, keep_runs=1)
+
+    stale = tmp_path / "runs" / "run-20260101-000000-ffff"
+    stale.mkdir(parents=True)
+    store.record_session({"run_id": "run-20260101-000000-ffff", "target": "com.old"})
+
+    kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+
+        host_run_id="run-20261025-100000-abcd",
+        runs_dir=tmp_path / "runs",
+    )
+
+    assert not stale.exists()
+    assert "run-20260101-000000-ffff" not in [r["run_id"] for r in store.fetch_sessions()]
+
+
+
 class GateProbe:
     """探针 gate：记录借用窗口与 purpose，供编排断言。"""
 
@@ -217,6 +380,7 @@ def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path
         target="tv.danmaku.bili",
         items=["CPU"],
         duration_s=30.0,
+
         host_run_id="run-gate-1",
         runs_dir=tmp_path / "runs",
     )

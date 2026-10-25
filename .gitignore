@@ -37,3 +37,6 @@ tmp/
 
 # agent worktrees
 .claude/worktrees/
+
+# agent 过程笔记不入库
+.claude/*.txt

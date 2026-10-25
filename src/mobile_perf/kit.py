@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -15,7 +16,12 @@ from .keeper import Keeper, ReadinessReport
 from .session import CollectSession
 from .store import PerfStore
 
+logger = logging.getLogger(__name__)
+
 KEEPER_BORROW_PURPOSE = "mobile_perf.keeper"
+
+DEFAULT_KEEP_RUNS = 200
+DEFAULT_KEEP_DAYS = 30.0
 
 
 class CollectError(RuntimeError):
@@ -83,6 +89,9 @@ class PerfKit:
         runs_dir: str | Path | None = None,
         backend: CollectBackend | None = None,
         store: PerfStore | None = None,
+        adb_runner: Any = None,
+        keep_runs: int = DEFAULT_KEEP_RUNS,
+        keep_days: float = DEFAULT_KEEP_DAYS,
         gate: DeviceGate | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -98,6 +107,9 @@ class PerfKit:
         self.runs_dir = Path(runs_dir) if runs_dir is not None else self._repo_root / "runs"
         self._backend = backend
         self._store = store
+        self._adb_runner = adb_runner
+        self.keep_runs = keep_runs
+        self.keep_days = keep_days
         self._gate = gate
         self._clock = clock
         self._sleep = sleep
@@ -194,6 +206,51 @@ class PerfKit:
             record = session.stop(str(artifacts_dir))
 
         artifact_files = collector.validate_artifacts(artifacts_dir)
+
+        # pull 完整性：设备端逐文件行数校验；通过才删设备端会话目录
+        remote_dir = (
+            record.stop_payload.get("outputPath")
+            if isinstance(record.stop_payload, dict)
+            else None
+        )
+        integrity_report = None
+        device_removed = False
+        if remote_dir:
+            integrity_report, device_removed = collector.cleanup_after_pull(
+                str(self.adb_path),
+                self.serial,
+                remote_dir,
+                artifacts_dir,
+                runner=self._adb_runner,
+            )
+            device_row_check = "passed" if integrity_report.ok else "failed"
+        else:
+            device_row_check = "skipped"  # 载荷未带设备端路径（如注入替身后端）
+        integrity = {
+            "deviceRowCheck": device_row_check,
+            "deviceDirRemoved": device_removed,
+        }
+        if integrity_report is not None and not integrity_report.ok:
+            integrity["mismatches"] = integrity_report.mismatches
+            if integrity_report.probe_error:
+                integrity["probeError"] = integrity_report.probe_error
+
+        # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
+        aggregates = collector.aggregate_artifacts(artifacts_dir)
+        metrics_summary = {
+            agg["metric_key"]: {
+                "unit": agg["unit"],
+                "source": agg["source"],
+                "min": agg["min"],
+                "median": agg["median"],
+                "mean": agg["mean"],
+                "max": agg["max"],
+                "p90": agg["p90"],
+                "sampleCount": agg["sample_count"],
+            }
+            for agg in aggregates
+        }
+
         meta = {
             "runId": run_id,
             "target": target,
@@ -206,6 +263,7 @@ class PerfKit:
             "soloSessionId": record.session_id,
             "marks": record.marks_as_list(),
             "status": "stopped",
+            "integrity": integrity,
         }
         collector.write_meta(run_dir, meta)
 
@@ -216,6 +274,8 @@ class PerfKit:
                 "marks": record.marks_as_list(),
             },
             artifacts=[str(path) for path in artifact_files],
+            metrics_summary=metrics_summary,
+            integrity=integrity,
         )
         report_module.write_report(run_dir, report_data)
 
@@ -235,4 +295,38 @@ class PerfKit:
                 "run_dir": str(run_dir),
             }
         )
+        store.record_metrics(run_id, aggregates)
+        store.record_run_artifacts(run_id, [str(artifacts_dir), str(run_dir)])
+        if integrity_report is not None and not integrity_report.ok:
+            reason = (
+                "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
+            )
+            store.record_event(
+                run_id,
+                kind="integrity_warning",
+                detail={
+                    "reason": reason,
+                    "deviceDir": remote_dir,
+                    "deviceDirKept": not device_removed,
+                    "mismatches": integrity_report.mismatches,
+                    "probeError": integrity_report.probe_error,
+                },
+            )
+            logger.warning(
+                "run %s pull 完整性异常（%s），设备端目录保留: %s",
+                run_id,
+                reason,
+                remote_dir,
+            )
+
+        # 本地数据保留（可配置）：仅清理本组件 run 目录，失败不阻断采集闭环
+        try:
+            collector.enforce_retention(
+                self.runs_dir,
+                store,
+                keep_runs=self.keep_runs,
+                keep_days=self.keep_days,
+            )
+        except Exception:  # noqa: BLE001 - 清理失败只告警
+            logger.exception("本地保留策略清理失败")
         return report_data
