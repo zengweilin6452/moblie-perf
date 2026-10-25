@@ -140,6 +140,9 @@ class _PerfSession:
         self.scope: Any | None = None
 
     def __enter__(self):
+        # 巡检先行（A2）：keeper 事件随本用例 run 入库，降级结论供标注使用；
+        # 设备不可用（含 needs_attention）在此暴露，不进采集窗口
+        self._fixture.kit.ensure_ready()
         self.scope = self._fixture.kit.collect(
             target=self._target,
             items=self._items,

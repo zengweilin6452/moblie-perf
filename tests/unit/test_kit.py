@@ -103,6 +103,40 @@ def healthy_keeper_device_call():
     return call
 
 
+def charging_keeper_device_call():
+    """巡检替身：设备充电中（AC powered true / status 2）→ Battery/Temperature 降级。"""
+    import time as _time
+    from types import SimpleNamespace
+
+    def call(args, timeout_s=15.0):
+        if args == ["devices"]:
+            stdout = "List of devices attached\n749622c9\tdevice\n"
+        elif "accessibility" in args:
+            stdout = (
+                "ACCESSIBILITY MANAGER SERVICES (dumpsys accessibility)\n"
+                "  Enabled services:\n"
+                "    Service[com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl]\n"
+                "  Bound services:\n"
+                "    Service[{com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl}]\n"
+            )
+        elif "battery" in args:
+            stdout = "AC powered: true\nUSB powered: false\nstatus: 2\n"
+        elif "activity" in args:
+            stdout = (
+                "  mResumedActivity: ActivityRecord{1 u0 "
+                "tv.danmaku.bili/.ui.MainActivity t42}\n"
+            )
+        elif "date" in args:
+            stdout = str(int(_time.time()))
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    return call
+
+
 def fake_adb(tmp_path):
     adb = tmp_path / "adb.exe"
     adb.write_bytes(b"x")
@@ -286,6 +320,13 @@ def make_solopi_kit(tmp_path, backend, adb_runner=None, **kwargs):
     kwargs.setdefault("store", PerfStore(tmp_path / "data" / "mobile_perf.db"))
     if adb_runner is not None:
         kwargs.setdefault("adb_runner", adb_runner)
+    # run_collect 巡检先行（A2）：默认接健康巡检桩
+    kwargs.setdefault("device_call", healthy_keeper_device_call())
+    kwargs.setdefault("doctor_fn", healthy_doctor_fn())
+    kwargs.setdefault(
+        "dialog_probe",
+        lambda: CheckResult("dialog_probe", "skipped", {"reason": "stub"}),
+    )
     return PerfKit(**kwargs)
 
 
@@ -719,13 +760,16 @@ class TestRunCollectSupplement:
         assert "temp_battery_c" not in rows
 
     def test_charging_degrades_temperature_polling(self, tmp_path):
-
+        """充电降级（A1 的一致性前提）：巡检结论驱动补采跳过温度项。"""
         adb = FakeSupplementAdb()
         store = PerfStore(tmp_path / "data" / "mobile_perf.db")
-        kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
-        kit.last_readiness = type(
-            "R", (), {"clock_offset_s": 3.0, "degraded_items": ("Battery", "Temperature")}
-        )()
+        kit = make_kit(
+            tmp_path,
+            FakeHarnessBackend(),
+            adb_runner=adb,
+            store=store,
+            device_call=charging_keeper_device_call(),
+        )
         kit.run_collect(
             target="tv.danmaku.bili",
             items=["CPU"],
@@ -738,7 +782,8 @@ class TestRunCollectSupplement:
         rows = {row["metric_key"] for row in store.fetch_metrics("run-supplement-2")}
         assert "temp_battery_c" not in rows
         assert "gpu_util_pct" in rows
-        assert all("battery" not in cmd for cmd in adb.cmds)
+        assert all("battery" not in cmd for cmd in adb.cmds)  # 补采轮询不带 dumpsys battery
+        assert kit.last_readiness.degraded_items == ("Battery", "Temperature")
 
     def test_supplement_disabled_by_parameter(self, tmp_path):
         store = PerfStore(tmp_path / "data" / "mobile_perf.db")
@@ -761,7 +806,7 @@ class TestRunCollectSupplement:
 
 
 class TestRunCollectClockSync:
-    """无巡检结论时 run_collect 实测 device-host 时钟偏移作补采对时基准。"""
+    """无巡检结论时 collect 实测 device-host 时钟偏移作补采对时基准（交互路径）。"""
 
     def test_offset_measured_when_no_readiness(self, tmp_path):
         import time as time_module
@@ -774,9 +819,17 @@ class TestRunCollectClockSync:
             "GPU Utilization (last 1s): 30%\n"
         )
         adb = FakeSupplementAdb(stdout=stdout)
-        kit, store, report = run_collect_with_supplement(
-            tmp_path, adb, sleep=lambda seconds: time_module.sleep(0.3)
-        )
+        store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+        kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
+        # 交互路径（kit.collect）不代跑巡检：无 readiness 时对时兜底实测
+        with kit.collect(
+            target="tv.danmaku.bili",
+            items=["CPU", "Memory"],
+            host_run_id="run-supplement-1",
+            runs_dir=tmp_path / "runs",
+            supplement_interval_s=0.05,
+        ):
+            time_module.sleep(0.3)
 
         meta = json.loads(
             ((tmp_path / "runs" / "run-supplement-1") / "meta.json").read_text(encoding="utf-8")
@@ -785,21 +838,20 @@ class TestRunCollectClockSync:
         assert abs(meta["supplement"]["clockOffsetS"]) < 5.0
 
     def test_keeper_offset_preferred_over_measurement(self, tmp_path):
+        from types import SimpleNamespace
 
         adb = FakeSupplementAdb()
         store = PerfStore(tmp_path / "data" / "mobile_perf.db")
         kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
-        kit.last_readiness = type(
-            "R", (), {"clock_offset_s": 1.5, "degraded_items": ()}
-        )()
-        kit.run_collect(
+        kit.last_readiness = SimpleNamespace(clock_offset_s=1.5, degraded_items=())
+        with kit.collect(
             target="tv.danmaku.bili",
             items=["CPU"],
-            duration_s=0.5,
             host_run_id="run-offset-keeper",
             runs_dir=tmp_path / "runs",
             supplement_interval_s=0.05,
-        )
+        ):
+            pass
 
         meta = json.loads(
             ((tmp_path / "runs" / "run-offset-keeper") / "meta.json").read_text(encoding="utf-8")
@@ -947,3 +999,59 @@ def test_kit_device_channel_single_priority_chain(tmp_path):
         args[:5] == ["-s", "749622c9", "shell", "date", "+%s"] and "dumpsys" in args
         for args in calls
     ), calls
+
+
+def test_run_collect_ensures_ready_and_persists_keeper_events(tmp_path):
+    """A2：run_collect 先 ensure_ready；keeper 事件（时钟偏移 warning）入 events 表并随报告返回。"""
+    from types import SimpleNamespace
+
+    def far_clock_call(args, timeout_s=15.0):
+        if args == ["devices"]:
+            stdout = "List of devices attached\n749622c9\tdevice\n"
+        elif "accessibility" in args:
+            stdout = (
+                "ACCESSIBILITY MANAGER SERVICES (dumpsys accessibility)\n"
+                "  Enabled services:\n"
+                "    Service[com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl]\n"
+                "  Bound services:\n"
+                "    Service[{com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl}]\n"
+            )
+        elif "battery" in args:
+            stdout = "AC powered: false\nUSB powered: false\nstatus: 4\n"
+        elif "activity" in args:
+            stdout = (
+                "  mResumedActivity: ActivityRecord{1 u0 "
+                "tv.danmaku.bili/.ui.MainActivity t42}\n"
+            )
+        elif "date" in args:
+            stdout = "1000000000"  # 2001 年：偏移远超阈值
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_kit(
+        tmp_path,
+        FakeHarnessBackend(),
+        device_call=far_clock_call,
+        store=store,
+        logwatch_factory=lambda **kw: NoopWatcher(),
+    )
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-keeper-ev",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+    )
+
+    events = store.fetch_events("run-keeper-ev")
+    assert "clock_offset" in [e["kind"] for e in events]
+    assert "clock_offset" in [e["kind"] for e in report["events"]]
+    assert events[0]["run_id"] == "run-keeper-ev"  # keeper 事件关联到本 run
+    (device_row,) = store.fetch_devices()
+    assert device_row["status"] == "online"

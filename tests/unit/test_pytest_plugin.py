@@ -8,9 +8,13 @@
 
 # 内嵌 conftest：覆盖 mobile_perf_kit 为假后端 kit（不碰 adb/设备）
 _INNER_CONFTEST = """
+import time
+from types import SimpleNamespace
+
 import pytest
 from mobile_perf import PerfKit
 from mobile_perf.gate import FileLockGate
+from mobile_perf.keeper import CheckResult
 from mobile_perf.store import PerfStore
 
 class FakeBackend:
@@ -36,6 +40,35 @@ class FakeBackend:
             "artifacts": {"performance": {"localDir": str(output_dir)}},
         }
 
+def keeper_call():
+    def call(args, timeout_s=15.0):
+        if args == ["devices"]:
+            stdout = "List of devices attached\\nFAKESERIAL\\tdevice\\n"
+        elif "accessibility" in args:
+            stdout = (
+                "ACCESSIBILITY MANAGER SERVICES (dumpsys accessibility)\\n"
+                "  Enabled services:\\n"
+                "    Service[com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl]\\n"
+                "  Bound services:\\n"
+                "    Service[{com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl}]\\n"
+            )
+        elif "battery" in args:
+            stdout = "AC powered: false\\nUSB powered: false\\nstatus: 4\\n"
+        elif "activity" in args:
+            stdout = (
+                "  mResumedActivity: ActivityRecord{1 u0 "
+                "tv.danmaku.bili/.ui.MainActivity t42}\\n"
+            )
+        elif "date" in args:
+            stdout = str(int(time.time()))
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    return call
+
 @pytest.fixture(scope="session")
 def mobile_perf_kit(request, tmp_path_factory):
     base = tmp_path_factory.mktemp("perf-kit")
@@ -51,6 +84,11 @@ def mobile_perf_kit(request, tmp_path_factory):
         sleep=lambda seconds: None,
         gate=FileLockGate(base / "leases"),
         foreground_restore=False,
+        device_call=keeper_call(),
+        doctor_fn=lambda: SimpleNamespace(
+            success=True, data={"failedChecks": [], "missingPermissions": []}
+        ),
+        dialog_probe=lambda: CheckResult("dialog_probe", "skipped", {"reason": "stub"}),
     )
     yield kit
     kit.store.close()  # 归还 SQLite 连接：Windows 下不关闭会锁 db，毒化共享 basetemp
@@ -154,3 +192,20 @@ def test_perf_session_judged_failure_lands_in_section(pytester):
     result.assert_outcomes(passed=1)
     sections = _collected_sections(recorder)
     assert "verdict: failed" in sections["mobile-perf"]
+
+
+def test_perf_session_runs_ensure_ready_before_collect(pytester):
+    """A2：plugin 路径巡检先行——keeper 结论（设备状态）随用例入库。"""
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_ready(perf):
+            with perf.session("tv.danmaku.bili", items=["CPU"]) as scope:
+                pass
+            (row,) = perf.kit.store.fetch_devices()
+            assert row["serial"] == "FAKESERIAL"
+            assert row["status"] == "online"
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(passed=1)

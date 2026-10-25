@@ -320,6 +320,17 @@ class CollectScope:
             )
         for warning in self._watch_warnings:
             store.record_event(self._run_id, kind="logwatch_warning", detail=dict(warning))
+        # keeper 巡检事件入统一时间轴（A2）：clock_offset/accessibility_needs_attention/
+        # tcpip_heal/foreground 等以现有 kind 关联本 run 入库，随报告返回
+        readiness = kit.last_readiness
+        if readiness is not None:
+            for event in getattr(readiness, "events", ()) or ():
+                store.record_event(
+                    self._run_id,
+                    kind=event["kind"],
+                    detail=event.get("detail", {}),
+                    ts=event.get("ts"),
+                )
         # 前台守卫事件（Q16 专项证据）：start/stop 后的漂移与还原记录
         for event in self.foreground_events:
             store.record_event(self._run_id, kind="foreground", detail=dict(event))
@@ -822,16 +833,19 @@ class PerfKit:
         supplement: bool = True,
         supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
     ) -> dict[str, Any]:
-        """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
+        """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
         collect() 的定时收口特例：窗口内 sleep duration_s，由作用域退出统一
-        收口。supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采
+        收口。开始前先 ensure_ready（设计方案 §6.2 流水线）：keeper 事件随本
+        run 入库，充电降级结论供 metricsSummary 标注与判定使用。
+        supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采
         温度/GPU（不持 gate 设备权），stop 后合并入库（source=pc_supplement）
         并进报告 series；充电降级（巡检 degraded_items 含 Temperature）时
         温度补采跳过。
         """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
+        self.ensure_ready()
         with self.collect(
             target=target,
             items=items,

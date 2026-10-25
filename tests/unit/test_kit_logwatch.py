@@ -4,6 +4,7 @@
 from tests.unit.test_kit import FakeHarnessBackend, fake_adb
 
 from mobile_perf.gate import FileLockGate
+from mobile_perf.keeper import CheckResult
 from mobile_perf.kit import PerfKit
 from mobile_perf.store import PerfStore
 
@@ -53,6 +54,15 @@ def make_kit(tmp_path, **kwargs):
     kwargs.setdefault("sleep", lambda seconds: None)
     kwargs.setdefault("store", store)
     kwargs.setdefault("gate", FileLockGate(tmp_path / "gate-leases"))
+    # run_collect 巡检先行（A2）：默认接健康巡检桩
+    from tests.unit.test_kit import healthy_doctor_fn, healthy_keeper_device_call
+
+    kwargs.setdefault("device_call", healthy_keeper_device_call())
+    kwargs.setdefault("doctor_fn", healthy_doctor_fn())
+    kwargs.setdefault(
+        "dialog_probe",
+        lambda: CheckResult("dialog_probe", "skipped", {"reason": "stub"}),
+    )
     return PerfKit(**kwargs), store
 
 
@@ -96,7 +106,9 @@ def test_run_collect_passes_target_packages_and_offset_to_factory(tmp_path):
     )
 
     assert captured["packages"] == ["tv.danmaku.bili"]
-    assert captured["clock_offset_s"] is None
+    # run_collect 巡检先行（A2）：offset 来自 keeper 巡检结论（健康桩时钟同步 → 接近 0）
+    assert captured["clock_offset_s"] is not None
+    assert abs(captured["clock_offset_s"]) < 5.0
 
 
 def test_run_collect_uses_calibrated_offset_from_last_readiness(tmp_path):
@@ -120,12 +132,12 @@ def test_run_collect_uses_calibrated_offset_from_last_readiness(tmp_path):
         foreground_package=None,
         clock_offset_s=-1.5,
     )
-    kit.run_collect(
+    with kit.collect(
         target="tv.danmaku.bili",
         items=["CPU"],
-        duration_s=30.0,
         runs_dir=tmp_path / "runs",
-    )
+    ):
+        pass
 
     assert captured["clock_offset_s"] == -1.5
 
