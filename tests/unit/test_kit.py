@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from mobile_perf import kit as kit_module
 from mobile_perf.gate import FileLockGate, GateBusyError
-from mobile_perf.kit import CollectError, PerfKit
+from mobile_perf.kit import CollectError, PerfKit, TrendError
 from mobile_perf.store import PerfStore
 
 
@@ -324,6 +325,150 @@ def test_run_collect_enforces_local_retention(tmp_path):
     assert not stale.exists()
     assert "run-20260101-000000-ffff" not in [r["run_id"] for r in store.fetch_sessions()]
 
+
+
+def test_run_collect_writes_html_report_with_same_source_json(tmp_path):
+    backend = SoloPiCsvBackend()
+    adb = FakeDeviceAdb()
+    kit = make_solopi_kit(tmp_path, backend, adb_runner=adb)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["Memory"],
+        duration_s=30.0,
+        host_run_id="run-html-1",
+        runs_dir=tmp_path / "runs",
+    )
+
+    run_dir = tmp_path / "runs" / "run-html-1"
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+    on_disk = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert on_disk == report
+    assert 'id="chart-mem_pss_mb"' in html
+    assert "vendor:echarts BEGIN" in html  # 离线 ECharts 内嵌
+
+
+def test_run_collect_records_device_profile_into_store_and_meta(tmp_path):
+    backend = SoloPiCsvBackend()
+    adb = FakeDeviceAdb()
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_solopi_kit(
+        tmp_path, backend, adb_runner=adb, store=store, device_profile="PICO4-Android12"
+    )
+
+    kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["Memory"],
+        duration_s=30.0,
+        host_run_id="run-profile-1",
+        runs_dir=tmp_path / "runs",
+    )
+
+    rows = store.fetch_sessions(target="tv.danmaku.bili")
+    assert rows[0]["device_profile"] == "PICO4-Android12"
+    meta = json.loads(
+        (tmp_path / "runs" / "run-profile-1" / "meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["deviceProfile"] == "PICO4-Android12"
+    assert json.loads(
+        (tmp_path / "runs" / "run-profile-1" / "report.json").read_text(encoding="utf-8")
+    )["deviceProfile"] == "PICO4-Android12"
+
+
+def test_trend_returns_asc_runs_with_aggregates(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    for index, run_id in enumerate(["run-20261025-100000-aaaa", "run-20261025-110000-bbbb"]):
+        store.record_session(
+            {
+                "run_id": run_id,
+                "target": "tv.danmaku.bili",
+                "device_profile": "PICO4-Android12",
+                "serial": "749622c9",
+                "started_at": f"2026-10-25T1{index}:00:00",
+                "duration_s": 30.0,
+            }
+        )
+        store.record_metrics(
+            run_id,
+            [
+                {
+                    "metric_key": "mem_pss_mb",
+                    "unit": "MB",
+                    "source": "solo_pi",
+                    "min": 10.0 + index,
+                    "median": 20.0 + index,
+                    "mean": 21.0 + index,
+                    "max": 30.0 + index,
+                    "p90": 29.0 + index,
+                    "sample_count": 3,
+                }
+            ],
+        )
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    trend = kit.trend("tv.danmaku.bili", "mem_pss_mb")
+
+    assert trend["metric"] == "mem_pss_mb"
+    assert trend["unit"] == "MB"
+    assert trend["labelZh"] == "应用PSS内存"
+    assert trend["profile"] == "PICO4-Android12"
+    assert trend["profileMismatch"] is False
+    assert [r["runId"] for r in trend["runs"]] == [
+        "run-20261025-100000-aaaa",
+        "run-20261025-110000-bbbb",
+    ]
+    assert [r["median"] for r in trend["runs"]] == [20.0, 21.0]
+    assert trend["runs"][0]["sampleCount"] == 3
+
+
+def test_trend_rejects_cross_profile_without_explicit_profile(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    for run_id, profile in [
+        ("run-a", "PICO4-Android12"),
+        ("run-b", "Mate60-Harmony4"),
+    ]:
+        store.record_session(
+            {"run_id": run_id, "target": "tv.danmaku.bili", "device_profile": profile}
+        )
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    with pytest.raises(
+        kit_module.ProfileMismatchError, match="显式传参|profile"
+    ) as excinfo:
+        kit.trend("tv.danmaku.bili", "mem_pss_mb")
+    assert "PICO4-Android12" in str(excinfo.value)
+    assert "Mate60-Harmony4" in str(excinfo.value)
+
+
+def test_trend_explicit_profile_overrides_and_marks_caliber_mismatch(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    for run_id, profile, median in [
+        ("run-a", "PICO4-Android12", 20.0),
+        ("run-b", "Mate60-Harmony4", 99.0),
+    ]:
+        store.record_session(
+            {"run_id": run_id, "target": "tv.danmaku.bili", "device_profile": profile}
+        )
+        store.record_metrics(
+            run_id,
+            [{"metric_key": "mem_pss_mb", "unit": "MB", "median": median, "sample_count": 1}],
+        )
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    trend = kit.trend("tv.danmaku.bili", "mem_pss_mb", profile="PICO4-Android12")
+
+    assert [r["runId"] for r in trend["runs"]] == ["run-a"]
+    assert trend["profileMismatch"] is True  # 口径不一致：另一档案的 run 被排除
+
+
+def test_trend_unknown_metric_and_empty_data_raise(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    with pytest.raises(TrendError, match="mem_pss_mb"):
+        kit.trend("tv.danmaku.bili", "no_such_metric")
+    with pytest.raises(TrendError, match="tv.danmaku.bili"):
+        kit.trend("tv.danmaku.bili", "mem_pss_mb")
 
 
 class GateProbe:

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import collector, solo
+from . import metrics as metrics_module
 from . import report as report_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
@@ -26,6 +27,18 @@ DEFAULT_KEEP_DAYS = 30.0
 
 class CollectError(RuntimeError):
     """采集闭环失败（启动、停止、pull 校验等任一环节）。"""
+
+
+class TrendError(RuntimeError):
+    """趋势查询失败（未知指标、无数据等）。"""
+
+
+class ProfileMismatchError(TrendError):
+    """跨设备档案的趋势查询未显式传参（Q6：口径不一致默认拒绝）。"""
+
+
+# 趋势查询的单包 run 上限（与 store.fetch_sessions 的 LIMIT 对应）
+TREND_MAX_RUNS = 1000
 
 
 class CollectBackend(Protocol):
@@ -89,6 +102,7 @@ class PerfKit:
         runs_dir: str | Path | None = None,
         backend: CollectBackend | None = None,
         store: PerfStore | None = None,
+        db_path: str | Path | None = None,
         adb_runner: Any = None,
         keep_runs: int = DEFAULT_KEEP_RUNS,
         keep_days: float = DEFAULT_KEEP_DAYS,
@@ -98,6 +112,7 @@ class PerfKit:
         device_call: Callable[..., Any] | None = None,
         doctor_fn: Callable[[], Any] | None = None,
         dialog_probe: Callable[[], Any] | None = None,
+        device_profile: str | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -105,6 +120,7 @@ class PerfKit:
         self.serial = serial
         self._repo_root = Path(repo_root) if repo_root is not None else default_repo_root()
         self.runs_dir = Path(runs_dir) if runs_dir is not None else self._repo_root / "runs"
+        self.db_path = db_path
         self._backend = backend
         self._store = store
         self._adb_runner = adb_runner
@@ -116,8 +132,16 @@ class PerfKit:
         self._device_call = device_call
         self._doctor_fn = doctor_fn
         self._dialog_probe = dialog_probe
+        self.device_profile = device_profile
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
+
+    @property
+    def store(self) -> PerfStore:
+        """组件的 SQLite 存储：注入优先，缺省 <repo>/data/mobile_perf.db。"""
+        if self._store is None:
+            self._store = PerfStore(self.db_path or self._repo_root / "data" / "mobile_perf.db")
+        return self._store
 
     @property
     def backend(self) -> CollectBackend:
@@ -166,6 +190,78 @@ class PerfKit:
         report = self._keeper.run()
         self.last_readiness = report
         return report
+
+    def trend(self, pkg: str, metric: str, profile: str | None = None) -> dict[str, Any]:
+        """跨 run 的指标趋势对比（Q6：跨设备档案默认拒绝）。
+
+        返回按时间升序的每 run 聚合对比（median/min/mean/max/p90/sampleCount）。
+        profile 未传且目标包的 run 跨多个设备档案时拒绝（ProfileMismatchError）；
+        显式传 profile 覆盖：只保留该档案的 run，其余被排除时标记
+        profileMismatch=True（口径不一致）。device_profile 未记录的 run 归为
+        None 档案参与判断。
+        """
+        spec = metrics_module.METRICS.get(metric)
+        if spec is None:
+            valid = ", ".join(sorted(metrics_module.METRICS))
+            raise TrendError(f"未知指标 {metric!r}，可选 canonical key: {valid}")
+
+        sessions = self.store.fetch_sessions(target=pkg, limit=TREND_MAX_RUNS)
+        if not sessions:
+            raise TrendError(f"包 {pkg} 没有已入库的 run，无法计算趋势")
+
+        profiles = {session.get("device_profile") for session in sessions}
+        profile_mismatch = False
+        if profile is None:
+            if len(profiles) > 1:
+                shown = ", ".join(sorted(str(item) for item in profiles))
+                raise ProfileMismatchError(
+                    f"包 {pkg} 的 run 跨多个设备档案（{shown}），口径不一致；"
+                    "请显式传 profile= 指定档案后重试"
+                )
+            chosen = sessions
+        else:
+            chosen = [s for s in sessions if s.get("device_profile") == profile]
+            if not chosen:
+                raise TrendError(
+                    f"包 {pkg} 没有 device_profile={profile!r} 的 run；"
+                    f"已有档案: {', '.join(sorted(str(item) for item in profiles)) or '未记录'}"
+                )
+            profile_mismatch = profiles != {profile}
+
+        runs: list[dict[str, Any]] = []
+        for session in reversed(chosen):  # started_at DESC 入库 → 反转为升序
+            for row in self.store.fetch_metrics(session["run_id"]):
+                if row["metric_key"] != metric:
+                    continue
+                runs.append(
+                    {
+                        "runId": session["run_id"],
+                        "startedAt": session.get("started_at"),
+                        "durationS": session.get("duration_s"),
+                        "serial": session.get("serial"),
+                        "deviceProfile": session.get("device_profile"),
+                        "min": row["min"],
+                        "median": row["median"],
+                        "mean": row["mean"],
+                        "max": row["max"],
+                        "p90": row["p90"],
+                        "sampleCount": row["sample_count"],
+                    }
+                )
+                break
+        if not runs:
+            raise TrendError(f"包 {pkg} 的 run 中没有指标 {metric} 的聚合数据")
+
+        return {
+            "pkg": pkg,
+            "metric": metric,
+            "unit": spec.unit,
+            "labelZh": spec.label_zh,
+            "labelEn": spec.label_en,
+            "profile": profile if profile is not None else chosen[0].get("device_profile"),
+            "profileMismatch": profile_mismatch,
+            "runs": runs,
+        }
 
     def run_collect(
         self,
@@ -237,25 +333,14 @@ class PerfKit:
 
         # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
         aggregates = collector.aggregate_artifacts(artifacts_dir)
-        metrics_summary = {
-            agg["metric_key"]: {
-                "unit": agg["unit"],
-                "source": agg["source"],
-                "min": agg["min"],
-                "median": agg["median"],
-                "mean": agg["mean"],
-                "max": agg["max"],
-                "p90": agg["p90"],
-                "sampleCount": agg["sample_count"],
-            }
-            for agg in aggregates
-        }
+        metrics_summary = report_module.summarize_aggregates(aggregates)
 
         meta = {
             "runId": run_id,
             "target": target,
             "items": list(items),
             "serial": self.serial,
+            "deviceProfile": self.device_profile,
             "hostRunId": host_run_id,
             "startedAt": record.started_at,
             "stoppedAt": record.stopped_at,
@@ -276,15 +361,20 @@ class PerfKit:
             artifacts=[str(path) for path in artifact_files],
             metrics_summary=metrics_summary,
             integrity=integrity,
+            series=report_module.series_from_artifacts(artifacts_dir),
+            # 事件时间轴归 07 号工单接入；此处保留空注入点
+            events=[],
         )
         report_module.write_report(run_dir, report_data)
+        report_module.write_html(run_dir, report_data)
 
-        store = self._store or PerfStore(self._repo_root / "data" / "mobile_perf.db")
+        store = self.store
         store.record_session(
             {
                 "run_id": run_id,
                 "solo_session_id": record.session_id,
                 "serial": self.serial,
+                "device_profile": self.device_profile,
                 "target": target,
                 "items": list(items),
                 "started_at": record.started_at,
