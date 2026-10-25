@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 04
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-09 六笔提交已合并进 mobile-perf-dev；249 unit/contract 全绿。judge 纯函数三态全分支单测覆盖；baseline 绑定 device_profile 严格匹配；阈值 CLI 传入不入库。注意：warn 级越界不改三态（记入 warnings）；store 列名沿用 source_run_id（与设计文档 source_session_id 语义一致））
 
 - [ ] 设阈值后对既有 run 产出 pass/fail 结论与证据引用（median 对比 + 窗口）
 - [ ] 跨 device_profile 判定 → not_tested（严格匹配）

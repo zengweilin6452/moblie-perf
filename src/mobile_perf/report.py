@@ -51,6 +51,7 @@ def series_from_artifacts(artifacts_dir: str | Path) -> dict[str, Any]:
         spec = metrics_module.METRICS[key]
         series[key] = {
             "unit": spec.unit,
+            "source": spec.source,
             "labelZh": spec.label_zh,
             "labelEn": spec.label_en,
             "points": _downsample(points),
@@ -68,14 +69,20 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
         keyed: list[tuple[int, str]] = []
         time_index: int | None = None
         simple_index: int | None = None
+        elapsed_index: int | None = None
         for index, name in enumerate(header):
             name = name.strip()
             if name == "RecordTime":
                 time_index = index
             elif name == "SimpleTime":
                 simple_index = index
+            elif name == "elapsed_s":
+                # 补采 CSV（supplement.py）：统一时间轴秒列
+                elapsed_index = index
             else:
                 spec = metrics_module.column_to_metric(name)
+                if spec is None and name in metrics_module.METRICS:
+                    spec = metrics_module.METRICS[name]  # 补采 CSV 用 canonical key 做列名
                 if spec is not None:
                     keyed.append((index, spec.key))
         for row in reader:
@@ -86,8 +93,10 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
                     value = float(row[index])
                 except ValueError:
                     continue
-                x_ms = _row_time_ms(row, time_index, simple_index)
-                t0, points = curves.setdefault(key, (x_ms, []))
+                x_ms = _row_time_ms(row, time_index, simple_index, elapsed_index)
+                # elapsed 轴已是相对秒，基准恒为 0（空值行不移动零点）
+                default_t0 = 0.0 if elapsed_index is not None else x_ms
+                t0, points = curves.setdefault(key, (default_t0, []))
                 if t0 is None:
                     t0 = x_ms
                     curves[key] = (t0, points)
@@ -97,7 +106,17 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
                     points.append((0.0, value))
 
 
-def _row_time_ms(row: list[str], time_index: int | None, simple_index: int | None) -> float | None:
+def _row_time_ms(
+    row: list[str],
+    time_index: int | None,
+    simple_index: int | None,
+    elapsed_index: int | None = None,
+) -> float | None:
+    if elapsed_index is not None and elapsed_index < len(row):
+        try:
+            return float(row[elapsed_index]) * 1000.0  # 补采 elapsed_s 为秒
+        except ValueError:
+            return None
     if time_index is not None and time_index < len(row):
         try:
             return float(row[time_index])  # SoloPi RecordTime 为毫秒时间戳
@@ -343,6 +362,7 @@ th {{ background: #f2f4f8; }}
   }});
 }})();
 </script>
+{combined_script}
 </body>
 </html>
 """
@@ -382,18 +402,69 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         f'<div class="chart" id="chart-{html_escape(key)}"></div>'
         for key in sorted(report.get("series") or {})
     )
+    combined_div, combined_script = _combined_thermal_markup(report.get("series") or {})
 
     html_text = _HTML_TEMPLATE.format(
         run_id=html_escape(report["runId"]),
         meta_rows=meta_rows,
         summary_rows="\n".join(summary_rows),
-        chart_divs=chart_divs,
+        chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
         report_json=report_json,
+        combined_script=combined_script,
     )
     path = Path(run_dir) / "report.html"
     path.write_text(html_text, encoding="utf-8")
     return path
+
+
+_COMBINED_CHART_ID = "chart-combined-thermal-fps"
+
+# 温度-帧率同图：帧率走左轴，补采温度/GPU 走右轴，共用统一时间轴（§6.3）
+_COMBINED_SCRIPT = """<script>
+(function () {
+  var report = window.__REPORT__ || {};
+  var series = report.series || {};
+  var fps = series["fps_frame"];
+  var supplement = [series["temp_battery_c"], series["gpu_util_pct"]].filter(Boolean);
+  if (!fps || supplement.length === 0 || typeof echarts === "undefined") return;
+  var el = document.getElementById("__CHART_ID__");
+  if (!el) return;
+  var chart = echarts.init(el);
+  var lines = [{
+    name: fps.labelZh + " (" + fps.unit + ")", type: "line", showSymbol: false, yAxisIndex: 0,
+    data: fps.points.map(function (p) { return [p[0], p[1]]; })
+  }];
+  supplement.forEach(function (item) {
+    lines.push({
+      name: item.labelZh + " (" + item.unit + ")", type: "line", showSymbol: false, yAxisIndex: 1,
+      data: item.points.map(function (p) { return [p[0], p[1]]; })
+    });
+  });
+  chart.setOption({
+    title: { text: "温度-帧率同图（统一时间轴）", textStyle: { fontSize: 13 } },
+    tooltip: { trigger: "axis" },
+    legend: { top: 22 },
+    xAxis: { type: "value", name: "s" },
+    yAxis: [
+      { type: "value", name: fps.unit },
+      { type: "value", name: supplement[0].unit }
+    ],
+    series: lines,
+    grid: { left: 60, right: 60, top: 60, bottom: 40 }
+  });
+})();
+</script>"""
+
+
+def _combined_thermal_markup(series: dict[str, Any]) -> tuple[str, str]:
+    """有帧率且有补采曲线时返回（同图 div，同图脚本）；否则返回空串。"""
+    has_fps = "fps_frame" in series
+    has_supplement = "temp_battery_c" in series or "gpu_util_pct" in series
+    if not (has_fps and has_supplement):
+        return "", ""
+    div = f'<h2>温度-帧率同图</h2><div class="chart" id="{_COMBINED_CHART_ID}"></div>'
+    return div, _COMBINED_SCRIPT.replace("__CHART_ID__", _COMBINED_CHART_ID)
 
 
 def _meta_rows(report: dict[str, Any]) -> list[tuple[str, str]]:

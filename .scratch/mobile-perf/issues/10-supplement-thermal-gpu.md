@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 05
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-10 七笔提交已合并进 mobile-perf-dev；281 unit/contract + device 2 通过（真机温度补采 36.2°C 量级入统一时间轴）。GPU 在本机型实测不可用（kgsl 需 root）→ 如实降级 + supplement_degraded 事件，未硬造数据；换支持设备自动生效。M3 至此完整：judge + 补采 + 三源同图）
 
 - [ ] 温度曲线与帧率曲线同图且时间对齐（时钟偏移校准生效）
 - [ ] 补采指标经指标字典入库（canonical key 合规，Q17）

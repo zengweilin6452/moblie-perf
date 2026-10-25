@@ -251,6 +251,7 @@ def test_run_collect_aggregates_metrics_into_store_and_report(tmp_path):
         duration_s=30.0,
         host_run_id="run-20261025-100000-abcd",
         runs_dir=tmp_path / "runs",
+        supplement=False,  # 本测试只关注 integrity 事件，补采单独覆盖
     )
 
     rows = store.fetch_metrics("run-20261025-100000-abcd")
@@ -286,6 +287,7 @@ def test_run_collect_keeps_device_dir_and_alarms_on_row_mismatch(tmp_path):
         duration_s=30.0,
         host_run_id="run-20261025-100000-abcd",
         runs_dir=tmp_path / "runs",
+        supplement=False,  # 本测试只关注 integrity 事件，补采单独覆盖
     )
 
     assert adb.removed == []  # 行数不一致保留设备端
@@ -314,6 +316,7 @@ def test_run_collect_skips_device_probe_without_remote_path(tmp_path):
         duration_s=30.0,
         host_run_id="run-no-remote",
         runs_dir=tmp_path / "runs",
+        supplement=False,  # 本测试只关注 integrity 事件，补采单独覆盖
     )
 
     assert report["integrity"]["deviceRowCheck"] == "skipped"
@@ -336,6 +339,7 @@ def test_run_collect_enforces_local_retention(tmp_path):
 
         host_run_id="run-20261025-100000-abcd",
         runs_dir=tmp_path / "runs",
+        supplement=False,  # 本测试只关注 integrity 事件，补采单独覆盖
     )
 
     assert not stale.exists()
@@ -548,6 +552,7 @@ def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path
 
     assert probe.borrows == [
         ("749622c9", "mobile_perf.start"),
+        ("749622c9", "mobile_perf.clock"),  # 无巡检结论时补采对时短借用
         ("749622c9", "mobile_perf.stop_pull"),
     ]
     assert backend.held_at_command == [("start", True), ("stop", True)]
@@ -579,6 +584,178 @@ def test_kit_defaults_to_file_lock_gate(tmp_path):
     assert isinstance(kit.gate, FileLockGate)
 
 
+# ---- supplement 接线：采集期间旁路补采，stop 后合并入库（票 10） ----
+
+SUPPLEMENT_STDOUT = (
+    "1792895592\n"
+    "Current Battery Service state:\n"
+    "  temperature: 285\n"
+    "GPU Utilization (last 1s): 30%\n"
+)
+
+
+class FakeSupplementAdb:
+    """模拟 adb：补采轮询命令返回固定 dumpsys 输出。"""
+
+    def __init__(self, stdout=SUPPLEMENT_STDOUT, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.cmds = []
+
+    def __call__(self, cmd, timeout_s):
+        self.cmds.append(list(cmd))
+        result = type("R", (), {})()
+        result.stdout = self.stdout
+        result.returncode = self.returncode
+        return result
+
+
+def run_collect_with_supplement(tmp_path, adb_runner, **kwargs):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb_runner, store=store, **kwargs)
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU", "Memory"],
+        duration_s=1.0,
+        host_run_id="run-supplement-1",
+        runs_dir=tmp_path / "runs",
+        supplement_interval_s=0.05,
+    )
+    return kit, store, report
+
+
+class TestRunCollectSupplement:
+    def test_supplement_samples_ingested_and_merged_into_store(self, tmp_path):
+        import time as time_module
+
+        adb = FakeSupplementAdb()
+        kit, store, report = run_collect_with_supplement(
+            tmp_path, adb, sleep=lambda seconds: time_module.sleep(0.3)
+        )
+
+        run_dir = tmp_path / "runs" / "run-supplement-1"
+        assert (run_dir / "artifacts" / "supplement_thermal_gpu.csv").is_file()
+
+        rows = {row["metric_key"]: row for row in store.fetch_metrics("run-supplement-1")}
+        assert rows["temp_battery_c"]["source"] == "pc_supplement"
+        assert rows["mem_pss_mb"]["source"] == "solo_pi"  # SoloPi 聚合未被挤出
+        assert rows["temp_battery_c"]["sample_count"] >= 1
+
+        assert report["metricsSummary"]["temp_battery_c"]["source"] == "pc_supplement"
+        assert report["series"]["temp_battery_c"]["source"] == "pc_supplement"
+        assert report["series"]["temp_battery_c"]["points"]
+
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        assert meta["supplement"]["enabled"] is True
+        assert meta["supplement"]["rounds"] >= 1
+        assert meta["supplement"]["degraded"] == []
+        kinds = [event["kind"] for event in store.fetch_events("run-supplement-1")]
+        assert "supplement_degraded" not in kinds  # logwatch 告警归 07，此处只看补采
+
+    def test_adb_failure_degrades_and_records_event_without_crashing(self, tmp_path):
+        adb = FakeSupplementAdb(stdout="", returncode=1)
+        kit, store, report = run_collect_with_supplement(tmp_path, adb)
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-supplement-1") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["errors"] == meta["supplement"]["rounds"]
+        keys = {entry["key"] for entry in meta["supplement"]["degraded"]}
+        assert keys == {"temp_battery_c", "gpu_util_pct"}
+
+        events = store.fetch_events("run-supplement-1")
+        assert any(event["kind"] == "supplement_degraded" for event in events)
+        rows = {row["metric_key"] for row in store.fetch_metrics("run-supplement-1")}
+        assert "temp_battery_c" not in rows
+
+    def test_charging_degrades_temperature_polling(self, tmp_path):
+
+        adb = FakeSupplementAdb()
+        store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+        kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
+        kit.last_readiness = type(
+            "R", (), {"clock_offset_s": 3.0, "degraded_items": ("Battery", "Temperature")}
+        )()
+        kit.run_collect(
+            target="tv.danmaku.bili",
+            items=["CPU"],
+            duration_s=0.5,
+            host_run_id="run-supplement-2",
+            runs_dir=tmp_path / "runs2",
+            supplement_interval_s=0.05,
+        )
+
+        rows = {row["metric_key"] for row in store.fetch_metrics("run-supplement-2")}
+        assert "temp_battery_c" not in rows
+        assert "gpu_util_pct" in rows
+        assert all("battery" not in cmd for cmd in adb.cmds)
+
+    def test_supplement_disabled_by_parameter(self, tmp_path):
+        store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+        kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+        kit.run_collect(
+            target="tv.danmaku.bili",
+            items=["CPU"],
+            duration_s=1.0,
+            host_run_id="run-nosupplement",
+            runs_dir=tmp_path / "runs",
+            supplement=False,
+        )
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-nosupplement") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["enabled"] is False
+        rows = {row["metric_key"] for row in store.fetch_metrics("run-nosupplement")}
+        assert "temp_battery_c" not in rows
+
+
+class TestRunCollectClockSync:
+    """无巡检结论时 run_collect 实测 device-host 时钟偏移作补采对时基准。"""
+
+    def test_offset_measured_when_no_readiness(self, tmp_path):
+        import time as time_module
+
+        now_epoch = int(time_module.time())
+        stdout = (
+            f"{now_epoch}\n"
+            "Current Battery Service state:\n"
+            "  temperature: 285\n"
+            "GPU Utilization (last 1s): 30%\n"
+        )
+        adb = FakeSupplementAdb(stdout=stdout)
+        kit, store, report = run_collect_with_supplement(
+            tmp_path, adb, sleep=lambda seconds: time_module.sleep(0.3)
+        )
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-supplement-1") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["clockOffsetSource"] == "measured"
+        assert abs(meta["supplement"]["clockOffsetS"]) < 5.0
+
+    def test_keeper_offset_preferred_over_measurement(self, tmp_path):
+
+        adb = FakeSupplementAdb()
+        store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+        kit = make_kit(tmp_path, FakeHarnessBackend(), adb_runner=adb, store=store)
+        kit.last_readiness = type(
+            "R", (), {"clock_offset_s": 1.5, "degraded_items": ()}
+        )()
+        kit.run_collect(
+            target="tv.danmaku.bili",
+            items=["CPU"],
+            duration_s=0.5,
+            host_run_id="run-offset-keeper",
+            runs_dir=tmp_path / "runs",
+            supplement_interval_s=0.05,
+        )
+
+        meta = json.loads(
+            ((tmp_path / "runs" / "run-offset-keeper") / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["supplement"]["clockOffsetSource"] == "keeper"
+        assert meta["supplement"]["clockOffsetS"] == 1.5
 # ---- ticket 09：基线保存与门禁判定门面 ----
 
 BASELINE_REPORT = {

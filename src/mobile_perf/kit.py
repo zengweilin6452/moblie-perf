@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from . import collector, solo
 from . import metrics as metrics_module
 from . import report as report_module
+from . import supplement as supplement_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
 from .judge import JudgeSpec, Verdict
@@ -267,6 +268,68 @@ class PerfKit:
             "runs": runs,
         }
 
+    def _measure_clock_offset_s(self) -> float | None:
+        """无巡检结论时短事务实测 device-host 时钟偏移（对时兜底，keeper 同口径）。"""
+        adb_path = str(self.adb_path)
+        runner = self._adb_runner
+
+        def raw_call(args: list[str], timeout_s: float = 10.0) -> Any:
+            if runner is not None:
+                return runner([adb_path, *args], timeout_s)
+            return supplement_module.default_call_device(adb_path)(args, timeout_s)
+
+        try:
+            result = self._borrowed(
+                "mobile_perf.clock",
+                lambda: raw_call(["-s", self.serial, "shell", "date", "+%s"], 10.0),
+            )
+            device_epoch = supplement_module.parse_device_epoch(result.stdout or "")
+        except Exception:  # noqa: BLE001 - 测不到偏移就退回假设已同步
+            return None
+        return time.time() - device_epoch if device_epoch is not None else None
+
+    def _start_supplement(
+        self, enabled: bool, interval_s: float
+    ) -> supplement_module.SupplementPoller | None:
+        """按巡检结论构造并启动补采轮询器（紧随 session.start，起点即会话起点）。
+
+        对时基准：巡检 clock_offset_s 优先；无巡检结论则短事务实测；实测失败
+        退回 0（假设已同步，偏差如实留在 meta 供判读）。充电降级
+        （degraded_items 含 Temperature）时温度补采跳过。轮询器不持 gate 设备权。
+        """
+        if not enabled:
+            return None
+        readiness = self.last_readiness
+        keeper_offset = (
+            readiness.clock_offset_s
+            if readiness is not None and readiness.clock_offset_s is not None
+            else None
+        )
+        charging = bool(readiness is not None and "Temperature" in readiness.degraded_items)
+        if keeper_offset is not None:
+            offset, offset_source = keeper_offset, "keeper"
+        else:
+            measured = self._measure_clock_offset_s()
+            offset = measured if measured is not None else 0.0
+            offset_source = "measured" if measured is not None else "assumed"
+        call = None
+        if self._adb_runner is not None:
+            adb_path = str(self.adb_path)
+
+            def call(args: list[str], timeout_s: float = 10.0) -> Any:
+                return self._adb_runner([adb_path, *args], timeout_s)
+
+        poller = supplement_module.SupplementPoller(
+            adb_path=str(self.adb_path),
+            serial=self.serial,
+            interval_s=interval_s,
+            clock_offset_s=offset,
+            collect_temperature=not charging,
+            call_device=call,
+        )
+        self._supplement_offset = (offset, offset_source)
+        poller.start()
+        return poller
     def save_baseline(
         self,
         report: dict[str, Any],
@@ -323,8 +386,15 @@ class PerfKit:
         duration_s: float,
         host_run_id: str | None = None,
         runs_dir: str | Path | None = None,
+        supplement: bool = True,
+        supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
     ) -> dict[str, Any]:
-        """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。"""
+        """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
+
+        supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采温度/GPU
+        （不持 gate 设备权），stop 后合并入库（source=pc_supplement）并进报告
+        series；充电降级（巡检 degraded_items 含 Temperature）时温度补采跳过。
+        """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
         run_id = host_run_id or collector.new_run_id()
@@ -347,6 +417,9 @@ class PerfKit:
             clock=self._clock,
         )
         session.start()
+        self._supplement_offset = (0.0, "assumed")
+        poller = self._start_supplement(supplement, supplement_interval_s)
+        supplement_result = None
         watcher: Any | None = None
         watch_warnings: list[dict[str, Any]] = []
         watch_events: list[dict[str, Any]] = []
@@ -354,6 +427,10 @@ class PerfKit:
             watcher = self._start_crash_watch(target, watch_warnings)
             self._sleep(duration_s)
         finally:
+            # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
+            # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
+            if poller is not None:
+                supplement_result = poller.stop()
             try:
                 # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
                 record = session.stop(str(artifacts_dir))
@@ -393,7 +470,33 @@ class PerfKit:
 
         # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
         aggregates = collector.aggregate_artifacts(artifacts_dir)
-        metrics_summary = report_module.summarize_aggregates(aggregates)
+
+        # 补采合并：样本落 artifacts（供报告重建 elapsed 时间轴），聚合并入本 run
+        supplement_info: dict[str, Any] = {"enabled": bool(poller)}
+        supplement_aggregates: list[dict[str, Any]] = []
+        if supplement_result is not None:
+            supplement_info.update(
+                {
+                    "intervalS": supplement_interval_s,
+                    "rounds": supplement_result.rounds,
+                    "errors": supplement_result.errors,
+                    "degraded": supplement_result.degraded,
+                    "clockOffsetS": self._supplement_offset[0],
+                    "clockOffsetSource": self._supplement_offset[1],
+                }
+            )
+            if supplement_result.samples:
+                supplement_aggregates = supplement_module.aggregate_samples(
+                    supplement_result.samples
+                )
+            if supplement_aggregates:
+                csv_path = supplement_module.write_supplement_csv(
+                    artifacts_dir / "supplement_thermal_gpu.csv", supplement_result.samples
+                )
+                supplement_info["csv"] = str(csv_path)
+
+        merged_aggregates = aggregates + supplement_aggregates
+        metrics_summary = report_module.summarize_aggregates(merged_aggregates)
 
         meta = {
             "runId": run_id,
@@ -409,6 +512,7 @@ class PerfKit:
             "marks": record.marks_as_list(),
             "status": "stopped",
             "integrity": integrity,
+            "supplement": supplement_info,
         }
         collector.write_meta(run_dir, meta)
 
@@ -443,8 +547,19 @@ class PerfKit:
                 "run_dir": str(run_dir),
             }
         )
-        store.record_metrics(run_id, aggregates)
+        store.record_metrics(run_id, merged_aggregates)
         store.record_run_artifacts(run_id, [str(artifacts_dir), str(run_dir)])
+        for degraded in supplement_info.get("degraded", []):
+            store.record_event(
+                run_id,
+                kind="supplement_degraded",
+                detail={
+                    "key": degraded["key"],
+                    "reason": degraded["reason"],
+                    "rounds": supplement_info.get("rounds"),
+                    "errors": supplement_info.get("errors"),
+                },
+            )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
         for event in watch_events:
             store.record_event(
