@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import collector, solo
+from . import collector, solo, supplement as supplement_module
 from . import metrics as metrics_module
 from . import report as report_module
 from .adb import default_repo_root, resolve_adb
@@ -263,6 +263,37 @@ class PerfKit:
             "runs": runs,
         }
 
+    def _start_supplement(
+        self, enabled: bool, interval_s: float
+    ) -> supplement_module.SupplementPoller | None:
+        """按巡检结论构造并启动补采轮询器（紧随 session.start，起点即会话起点）。
+
+        巡检 clock_offset_s 为统一时间轴换算基准（未巡检按 0）；充电降级
+        （degraded_items 含 Temperature）时温度补采跳过。轮询器不持 gate 设备权。
+        """
+        if not enabled:
+            return None
+        readiness = self.last_readiness
+        offset = readiness.clock_offset_s if readiness is not None else None
+        charging = bool(readiness is not None and "Temperature" in readiness.degraded_items)
+        call = None
+        if self._adb_runner is not None:
+            adb_path = str(self.adb_path)
+
+            def call(args: list[str], timeout_s: float = 10.0) -> Any:
+                return self._adb_runner([adb_path, *args], timeout_s)
+
+        poller = supplement_module.SupplementPoller(
+            adb_path=str(self.adb_path),
+            serial=self.serial,
+            interval_s=interval_s,
+            clock_offset_s=offset if offset is not None else 0.0,
+            collect_temperature=not charging,
+            call_device=call,
+        )
+        poller.start()
+        return poller
+
     def run_collect(
         self,
         *,
@@ -271,8 +302,15 @@ class PerfKit:
         duration_s: float,
         host_run_id: str | None = None,
         runs_dir: str | Path | None = None,
+        supplement: bool = True,
+        supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
     ) -> dict[str, Any]:
-        """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。"""
+        """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
+
+        supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采温度/GPU
+        （不持 gate 设备权），stop 后合并入库（source=pc_supplement）并进报告
+        series；充电降级（巡检 degraded_items 含 Temperature）时温度补采跳过。
+        """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
         run_id = host_run_id or collector.new_run_id()
@@ -295,11 +333,17 @@ class PerfKit:
             clock=self._clock,
         )
         session.start()
+        poller = self._start_supplement(supplement, supplement_interval_s)
+        supplement_result = None
         try:
             self._sleep(duration_s)
         finally:
-            # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
-            record = session.stop(str(artifacts_dir))
+            try:
+                # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
+                record = session.stop(str(artifacts_dir))
+            finally:
+                if poller is not None:
+                    supplement_result = poller.stop()
 
         artifact_files = collector.validate_artifacts(artifacts_dir)
 
@@ -333,7 +377,32 @@ class PerfKit:
 
         # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
         aggregates = collector.aggregate_artifacts(artifacts_dir)
-        metrics_summary = report_module.summarize_aggregates(aggregates)
+
+        # 补采合并：样本落 artifacts（供报告重建 elapsed 时间轴），聚合并入本 run
+        supplement_info: dict[str, Any] = {"enabled": bool(poller)}
+        supplement_aggregates: list[dict[str, Any]] = []
+        if supplement_result is not None:
+            supplement_info.update(
+                {
+                    "intervalS": supplement_interval_s,
+                    "rounds": supplement_result.rounds,
+                    "errors": supplement_result.errors,
+                    "degraded": supplement_result.degraded,
+                    "clockOffsetS": poller.clock_offset_s if poller else None,
+                }
+            )
+            if supplement_result.samples:
+                supplement_aggregates = supplement_module.aggregate_samples(
+                    supplement_result.samples
+                )
+            if supplement_aggregates:
+                csv_path = supplement_module.write_supplement_csv(
+                    artifacts_dir / "supplement_thermal_gpu.csv", supplement_result.samples
+                )
+                supplement_info["csv"] = str(csv_path)
+
+        merged_aggregates = aggregates + supplement_aggregates
+        metrics_summary = report_module.summarize_aggregates(merged_aggregates)
 
         meta = {
             "runId": run_id,
@@ -349,6 +418,7 @@ class PerfKit:
             "marks": record.marks_as_list(),
             "status": "stopped",
             "integrity": integrity,
+            "supplement": supplement_info,
         }
         collector.write_meta(run_dir, meta)
 
@@ -385,8 +455,19 @@ class PerfKit:
                 "run_dir": str(run_dir),
             }
         )
-        store.record_metrics(run_id, aggregates)
+        store.record_metrics(run_id, merged_aggregates)
         store.record_run_artifacts(run_id, [str(artifacts_dir), str(run_dir)])
+        for degraded in supplement_info.get("degraded", []):
+            store.record_event(
+                run_id,
+                kind="supplement_degraded",
+                detail={
+                    "key": degraded["key"],
+                    "reason": degraded["reason"],
+                    "rounds": supplement_info.get("rounds"),
+                    "errors": supplement_info.get("errors"),
+                },
+            )
         if integrity_report is not None and not integrity_report.ok:
             reason = (
                 "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"

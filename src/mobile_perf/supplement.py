@@ -108,7 +108,6 @@ class SupplementPoller:
         serial: str,
         interval_s: float = DEFAULT_INTERVAL_S,
         clock_offset_s: float,
-        session_start_host_epoch_s: float,
         collect_temperature: bool = True,
         collect_gpu: bool = True,
         call_device: DeviceCaller | None = None,
@@ -121,7 +120,6 @@ class SupplementPoller:
         self.serial = serial
         self.interval_s = interval_s
         self.clock_offset_s = clock_offset_s
-        self.session_start_host_epoch_s = session_start_host_epoch_s
         self.collect_temperature = collect_temperature
         self.collect_gpu = collect_gpu
         self._call = call_device or default_call_device(adb_path)
@@ -145,6 +143,7 @@ class SupplementPoller:
         return args
 
     def start(self) -> None:
+        """开始轮询；宿主会话起点由本次调用的宿主时钟即取（紧随 session.start 调用）。"""
         if self._thread is not None:
             raise RuntimeError("poller already started")
         self._start_wall = self._now()
@@ -172,13 +171,16 @@ class SupplementPoller:
         except Exception:  # noqa: BLE001 - 单轮失败只计数，不中断旁路采集
             self._result.errors += 1
             return
+        if int(getattr(output, "returncode", 1)) != 0:
+            self._result.errors += 1
+            return
         stdout = getattr(output, "stdout", "") or ""
         epoch = parse_device_epoch(stdout)
         elapsed = (
             to_unified_elapsed_s(
                 device_epoch_s=epoch,
                 clock_offset_s=self.clock_offset_s,
-                session_start_host_epoch_s=self.session_start_host_epoch_s,
+                session_start_host_epoch_s=self._start_wall,
             )
             if epoch is not None
             else self._now() - self._start_wall  # date 不可读时退回宿主侧计时
