@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from . import collector, solo
 from . import metrics as metrics_module
 from . import report as report_module
+from . import startup as startup_module
 from . import supplement as supplement_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
@@ -121,6 +122,7 @@ class CollectScope:
         runs_dir: Path | None,
         supplement: bool,
         supplement_interval_s: float,
+        start_mode: str | None = None,
     ):
         self._kit = kit
         self.target = target
@@ -128,6 +130,7 @@ class CollectScope:
         self._host_run_id = host_run_id
         self._supplement = supplement
         self._supplement_interval_s = supplement_interval_s
+        self._start_mode = start_mode
         self._run_id = host_run_id or collector.new_run_id()
         runs_dir_path = Path(runs_dir) if runs_dir is not None else kit.runs_dir
         self._run_dir = collector.create_run_dir(runs_dir_path, self._run_id)
@@ -138,6 +141,7 @@ class CollectScope:
         self._watch_warnings: list[dict[str, Any]] = []
         self.foreground_before: dict[str, Any] | None = None
         self.foreground_events: list[dict[str, Any]] = []
+        self.startup: startup_module.StartupResult | None = None
         self.report: dict[str, Any] | None = None
         self._finalized = False
 
@@ -175,7 +179,35 @@ class CollectScope:
         )
         self._watcher = kit._start_crash_watch(self.target, self._watch_warnings)
         kit._guard_foreground(self, phase="after_start")
+        # 启动编排（ticket 12）：发生在 SoloPi 采集窗口内，启动期资源曲线
+        # 覆盖启动时刻；失败如实降级为事件，不阻断采集闭环
+        if self._start_mode:
+            self.startup = self._run_startup(self._start_mode)
         return self
+
+    def _run_startup(self, mode: str) -> startup_module.StartupResult:
+        """在采集窗口内执行启动编排；每条设备命令各为短事务借用（ADR-0001）。
+
+        设备命令带 ``-s <serial> shell`` 前缀（组件设备通道统一约定）。
+        """
+        kit = self._kit
+
+        def shell(args: list[str], timeout_s: float = 15.0) -> Any:
+            prefixed = ["-s", kit.serial, "shell", *args]
+            return kit._borrowed(
+                "mobile_perf.startup", lambda: kit._shell(prefixed, timeout_s)
+            )
+
+        result = startup_module.run_startup(
+            shell=shell,
+            target=self.target,
+            mode=mode,
+            sleep=kit._sleep,
+            elapsed=self._session.elapsed_s,
+        )
+        if result.error:
+            logger.warning("启动编排（%s）失败: %s", mode, result.error)
+        return result
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.finalize()
@@ -258,6 +290,44 @@ class CollectScope:
                 supplement_info["csv"] = str(csv_path)
 
         merged_aggregates = aggregates + supplement_aggregates
+        # 启动编排结论（ticket 12）：ms 为单样本指标（聚合字段填单值），
+        # 双路对照与失败明细随事件/meta 如实入库
+        startup_result = self.startup
+        startup_aggregates: list[dict[str, Any]] = []
+        startup_meta: dict[str, Any] | None = None
+        if startup_result is not None:
+            key = f"app_{startup_result.mode}_start_ms"
+            startup_meta = {
+                "mode": startup_result.mode,
+                "metricKey": key,
+                "ms": startup_result.ms,
+                "msSource": startup_result.ms_source,
+                "launchState": startup_result.launch_state,
+                "waitTimeMs": startup_result.wait_time_ms,
+                "thisTimeMs": startup_result.this_time_ms,
+                "displayedMs": startup_result.displayed_ms,
+                "deviationMs": (
+                    round(startup_result.displayed_ms - startup_result.ms, 3)
+                    if startup_result.displayed_ms is not None
+                    and startup_result.ms is not None
+                    else None
+                ),
+                "fullyDrawnMs": startup_result.fully_drawn_ms,
+                "component": startup_result.component,
+                "status": startup_result.status,
+                "error": startup_result.error,
+                "elapsedS": (
+                    round(startup_result.elapsed_s, 3)
+                    if startup_result.elapsed_s is not None
+                    else None
+                ),
+                "ts": startup_result.ts,
+            }
+            if startup_result.ms is not None:
+                startup_aggregates.append(
+                    metrics_module.aggregate_row(key, [startup_result.ms])
+                )
+        merged_aggregates += startup_aggregates
         metrics_summary = report_module.summarize_aggregates(merged_aggregates)
         # 充电降级（A1/§6.2）：巡检结论含 Battery/Temperature 降级项时，
         # 对应指标标注 not_tested（附原因），其余指标照常
@@ -282,6 +352,7 @@ class CollectScope:
             "status": "stopped",
             "integrity": integrity,
             "supplement": supplement_info,
+            "startup": startup_meta,
         }
         collector.write_meta(self._run_dir, meta)
 
@@ -350,6 +421,12 @@ class CollectScope:
         # 前台守卫事件（Q16 专项证据）：start/stop 后的漂移与还原记录
         for event in self.foreground_events:
             store.record_event(self._run_id, kind="foreground", detail=dict(event))
+        # 启动完成时刻入统一时间轴（ticket 12）：ts 为启动完成时的墙钟，
+        # detail 含 mode/ms/双路对照（elapsedS 为会话内相对秒）
+        if startup_meta is not None:
+            store.record_event(
+                self._run_id, kind="startup", detail=startup_meta, ts=startup_result.ts
+            )
         if integrity_report is not None and not integrity_report.ok:
             reason = (
                 "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
@@ -854,13 +931,15 @@ class PerfKit:
         runs_dir: Any = _UNSET,
         supplement: Any = _UNSET,
         supplement_interval_s: Any = _UNSET,
+        start_mode: Any = _UNSET,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
         主形态 ``kit.collect(SessionSpec(...))``；既有 kwargs 形态保留兼容，
-        显式 kwargs 优先于 spec 字段。退出 with 块即 finalize（停止 → pull →
-        校验 → 归档 → 入库 → 报告）；报告同时在 scope.report 上留存。
-        host_run_id 未传时自动生成。
+        显式 kwargs 优先于 spec 字段。start_mode（ticket 12）：None=不编排，
+        cold/warm 在采集窗口内编排启动并计得启动时间指标。退出 with 块即
+        finalize（停止 → pull → 校验 → 归档 → 入库 → 报告）；报告同时在
+        scope.report 上留存。host_run_id 未传时自动生成。
         """
         if spec is not None:
             if target is _UNSET:
@@ -875,6 +954,8 @@ class PerfKit:
                 supplement = spec.supplement
             if supplement_interval_s is _UNSET:
                 supplement_interval_s = spec.supplement_interval_s
+            if start_mode is _UNSET:
+                start_mode = spec.start_mode
         if not self.serial:
             raise ValueError("必须提供设备 serial（显式参数或 CLI/env 解析）")
         if target is _UNSET or items is _UNSET:
@@ -887,6 +968,13 @@ class PerfKit:
             supplement = True
         if supplement_interval_s is _UNSET:
             supplement_interval_s = supplement_module.DEFAULT_INTERVAL_S
+        if start_mode is _UNSET:
+            start_mode = None
+        elif start_mode is not None and start_mode not in startup_module.STARTUP_MODES:
+            raise ValueError(
+                f"start_mode 只支持 {', '.join(startup_module.STARTUP_MODES)} 或 None，"
+                f"收到 {start_mode!r}"
+            )
         return CollectScope(
             self,
             target=target,
@@ -895,6 +983,7 @@ class PerfKit:
             runs_dir=runs_dir,
             supplement=supplement,
             supplement_interval_s=supplement_interval_s,
+            start_mode=start_mode,
         )
 
     def run_collect(
@@ -907,12 +996,16 @@ class PerfKit:
         runs_dir: str | Path | None = None,
         supplement: bool = True,
         supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
+        start_mode: str | None = None,
     ) -> dict[str, Any]:
         """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
         collect() 的定时收口特例：窗口内 sleep duration_s，由作用域退出统一
         收口。开始前先 ensure_ready（设计方案 §6.2 流水线）：keeper 事件随本
         run 入库，充电降级结论供 metricsSummary 标注与判定使用。
+        start_mode（ticket 12）：cold/warm 时启动编排发生在采集窗口内，启动
+        时间指标（app_cold_start_ms/app_warm_start_ms）与 startup 事件一并
+        入库。
         supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采
         温度/GPU（不持 gate 设备权），stop 后合并入库（source=pc_supplement）
         并进报告 series；充电降级（巡检 degraded_items 含 Temperature）时
@@ -928,6 +1021,7 @@ class PerfKit:
             runs_dir=runs_dir,
             supplement=supplement,
             supplement_interval_s=supplement_interval_s,
+            start_mode=start_mode,
         ) as scope:
             self._sleep(duration_s)
         # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口

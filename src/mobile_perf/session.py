@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import startup as startup_module
 from .supplement import DEFAULT_INTERVAL_S
 
 
@@ -23,6 +24,8 @@ class SessionSpec:
     target 为被测应用包名；items 为 SoloPi 采集项（GLOSSARY：Collect Items，
     API 参数名沿用上游契约，由指标字典翻译为 canonical key）。host_run_id 未传
     时由 kit 自动生成；runs_dir/supplement 与 kit.collect 同名参数语义一致。
+    start_mode 为启动编排模式（ticket 12）：None=不编排；cold=窗口内
+    force-stop 后拉起；warm=退后台后再拉起（GLOSSARY：启动模式）。
     """
 
     target: str
@@ -31,6 +34,14 @@ class SessionSpec:
     runs_dir: str | Path | None = None
     supplement: bool = True
     supplement_interval_s: float = DEFAULT_INTERVAL_S
+    start_mode: str | None = None
+
+    def __post_init__(self):
+        if self.start_mode is not None and self.start_mode not in startup_module.STARTUP_MODES:
+            raise ValueError(
+                f"start_mode 只支持 {', '.join(startup_module.STARTUP_MODES)} 或 None，"
+                f"收到 {self.start_mode!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -108,6 +119,12 @@ class CollectSession:
         mark = Mark(label=label, elapsed_s=self._clock() - self._started_mono)
         self.marks.append(mark)
         return mark
+
+    def elapsed_s(self) -> float | None:
+        """当前时刻相对会话开始的秒数（统一时间轴读数）；未开始返回 None。"""
+        if self._started_mono is None:
+            return None
+        return self._clock() - self._started_mono
 
     def stop(self, output_dir: str) -> SessionRecord:
         self._require_started("stop")

@@ -2,6 +2,9 @@
 
 默认 <repo>/data/mobile_perf.db，WAL + busy_timeout=5s（并发首连切换重试见
 _enable_wal）；原始 CSV 永不入库，只入聚合行（min/median/mean/max/p90）。
+metrics.source 语义（指标字典为准）：solo_pi=端侧 CSV 采集、
+pc_supplement=PC 侧 dumpsys 补采、pc_orchestration=PC 编排计得（ticket 12
+启动时间，单样本聚合）。
 表结构：devices（设备状态，巡检后如实 upsert）、sessions、metrics、events、
 baselines（宿主经 kit.save_baseline 写入）、runs_artifacts。
 """

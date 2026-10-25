@@ -130,6 +130,10 @@ METRICS: dict[str, MetricSpec] = {
         MetricSpec("battery_pct", "%", "solo_pi", "电量", "Battery level"),
         MetricSpec("temp_battery_c", "°C", "pc_supplement", "电池温度", "Battery temperature"),
         MetricSpec("gpu_util_pct", "%", "pc_supplement", "GPU占用", "GPU utilization"),
+        # 启动编排指标（ticket 12）：采集窗口内 force-stop/退后台后 am start -W
+        # 计得，单样本入库（聚合字段填单值）；无 SoloPi 原始列
+        MetricSpec("app_cold_start_ms", "ms", "pc_orchestration", "冷启动耗时", "Cold start time"),
+        MetricSpec("app_warm_start_ms", "ms", "pc_orchestration", "温启动耗时", "Warm start time"),
     )
 }
 
