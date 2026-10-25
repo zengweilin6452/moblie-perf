@@ -422,7 +422,10 @@ def test_ensure_ready_borrows_gate_per_action_and_releases(tmp_path):
     assert kit.last_readiness is report
     gate = kit.gate
     assert gate.held is False  # 短事务：巡检结束设备权已归还
-    assert gate.borrows and all(p == "mobile_perf.keeper" for _, p in gate.borrows)
+    # 前台守卫（Q16）的读取/还原也走短借用，purpose=mobile_perf.foreground
+    assert gate.borrows and all(
+        p in ("mobile_perf.keeper", "mobile_perf.foreground") for _, p in gate.borrows
+    )
 
 
 def test_ensure_ready_reentrant_calls_are_safe(tmp_path):

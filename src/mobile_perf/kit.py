@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,8 +18,7 @@ from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
 from .judge import JudgeSpec, Verdict
 from .judge import judge as _judge_report
-from .keeper import Keeper, ReadinessReport
-from .keeper import parse_foreground_component, parse_foreground_package
+from .keeper import Keeper, ReadinessReport, parse_foreground_component, parse_foreground_package
 from .session import CollectSession
 from .store import PerfStore
 
@@ -103,7 +104,7 @@ class CollectScope:
 
     def __init__(
         self,
-        kit: "PerfKit",
+        kit: PerfKit,
         *,
         target: str,
         items: list[str],
@@ -140,7 +141,7 @@ class CollectScope:
             raise RuntimeError("cannot mark before collect scope is entered")
         return self._session.mark(label)
 
-    def __enter__(self) -> "CollectScope":
+    def __enter__(self) -> CollectScope:
         kit = self._kit
         backend = kit.backend
         if kit.foreground_restore:
@@ -445,9 +446,11 @@ class PerfKit:
             return action()
 
     def _shell(self, args: list[str], timeout_s: float = 15.0) -> Any:
-        """发起一次 adb shell 命令：注入 runner 优先，否则 supplement 默认通道。"""
+        """发起一次 adb shell 命令：注入 runner > 注入 device_call > supplement 默认通道。"""
         if self._adb_runner is not None:
             return self._adb_runner([str(self.adb_path), *args], timeout_s)
+        if self._device_call is not None:
+            return self._device_call(args, timeout_s)
         return supplement_module.default_call_device(str(self.adb_path))(args, timeout_s)
 
     def _read_foreground_state(self) -> dict[str, Any] | None:
@@ -488,22 +491,30 @@ class PerfKit:
         self._borrowed("mobile_perf.foreground", lambda: self._shell(args))
         return via
 
-    def _guard_foreground(self, scope: "CollectScope", *, phase: str) -> None:
-        """前台守卫：phase 时刻检测前台漂移，漂移即还原为采集前状态。
+    def _guard_foreground(self, scope: CollectScope, *, phase: str) -> None:
+        """前台守卫：phase 时刻检测前台漂移，漂移即还原为采集前状态。"""
+        scope.foreground_events.extend(
+            self._guard_foreground_events(scope.foreground_before, phase=phase)
+        )
+
+    def _guard_foreground_events(
+        self, before: dict[str, Any] | None, *, phase: str
+    ) -> list[dict[str, Any]]:
+        """守卫核心：返回本 phase 产生的前台事件明细（无漂移返回空）。
 
         守卫失败（读取/还原异常）只记事件，绝不阻断采集闭环（Q16：如实
         记录而非掩盖）。
         """
-        if not self.foreground_restore or scope.foreground_before is None:
-            return
-        before_pkg = scope.foreground_before["package"]
+        if not self.foreground_restore or before is None:
+            return []
+        before_pkg = before["package"]
         try:
             state = self._read_foreground_state()
             observed = state["package"] if state else None
             if observed == before_pkg:
-                return
-            via = self._restore_foreground(scope.foreground_before)
-            scope.foreground_events.append(
+                return []
+            via = self._restore_foreground(before)
+            return [
                 {
                     "phase": phase,
                     "before": before_pkg,
@@ -511,10 +522,10 @@ class PerfKit:
                     "restored": True,
                     "restoreVia": via,
                 }
-            )
+            ]
         except Exception as exc:  # noqa: BLE001 - 守卫失败不阻断采集
             logger.warning("前台守卫（%s）失败: %s", phase, exc)
-            scope.foreground_events.append(
+            return [
                 {
                     "phase": phase,
                     "before": before_pkg,
@@ -522,7 +533,7 @@ class PerfKit:
                     "restored": False,
                     "error": str(exc),
                 }
-            )
+            ]
 
     def ensure_ready(self) -> ReadinessReport:
         """巡检自愈（幂等可重入）：doctor + tcpip 自愈 + 无障碍/充电/前台/时钟检查。
@@ -554,7 +565,27 @@ class PerfKit:
                     borrowed_call, self.serial
                 ),
             )
+        # 前台守卫（Q16）：doctor 子命令经 HarnessSession 启动 SoloPi 控制面，
+        # 且本机 dumpsys window 报 mCurrentFocus=null 时 Harness 的
+        # preserve_foreground 拿不到还原目标——巡检完成后由本组件还原前台，
+        # 事件随报告返回（与 keeper 事件同形，入库由编排层完成）
+        before = self._read_foreground_state() if self.foreground_restore else None
         report = self._keeper.run()
+        if before is not None:
+            events = self._guard_foreground_events(before, phase="after_ready")
+            if events:
+                report = dataclasses.replace(
+                    report,
+                    events=tuple(report.events)
+                    + tuple(
+                        {
+                            "kind": "foreground",
+                            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                            "detail": event,
+                        }
+                        for event in events
+                    ),
+                )
         self.last_readiness = report
         return report
 

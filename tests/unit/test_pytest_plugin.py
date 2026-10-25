@@ -5,8 +5,6 @@
 进报告 sections。runs_dir/store/lease 都落在 pytester 临时目录。
 """
 
-import json
-from pathlib import Path
 
 # 内嵌 conftest：覆盖 mobile_perf_kit 为假后端 kit（不碰 adb/设备）
 _INNER_CONFTEST = """

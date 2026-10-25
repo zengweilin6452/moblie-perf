@@ -6,8 +6,7 @@ finalize 停止采集并走完整归档/入库/报告链路——pytest 钩子�
 """
 
 import pytest
-
-from tests.unit.test_kit import FakeHarnessBackend, make_kit
+from tests.unit.test_kit import FakeHarnessBackend, fake_adb, make_kit
 
 
 def _counting_kit(tmp_path, backend=None):
@@ -139,3 +138,64 @@ def test_collect_skips_foreground_guard_when_restore_disabled(tmp_path):
 
     assert not any("dumpsys" in cmd for cmd in adb.calls)
     assert scope.foreground_events == []
+
+
+def test_ensure_ready_restores_foreground_after_doctor_steals(tmp_path):
+    """Q16 证据：Harness doctor 抢前台 → ensure_ready 守卫还原并随报告返回事件。"""
+    from types import SimpleNamespace
+
+    from mobile_perf.gate import FileLockGate
+    from mobile_perf.keeper import CheckResult
+    from mobile_perf.kit import PerfKit
+    from mobile_perf.store import PerfStore
+
+    dumpsys_script = iter(
+        [
+            "  ResumedActivity: ActivityRecord{1 u0 tv.danmaku.bili/.MainActivityV2 t1}\n",
+            "  ResumedActivity: ActivityRecord{1 u0 tv.danmaku.bili/.MainActivityV2 t1}\n",
+            "  ResumedActivity: ActivityRecord{2 u0 com.alipay.hulu/.activity.SplashActivity t2}\n",
+        ]
+    )
+    recorded = []
+
+    def fake_call(args, timeout_s=15.0):
+        class Result:
+            def __init__(self, stdout, returncode=0, stderr=""):
+                self.stdout = stdout
+                self.returncode = returncode
+                self.stderr = stderr
+
+        recorded.append(list(args))
+        if args == ["devices"]:
+            return Result("List of devices attached\n749622c9\tdevice\n")
+        if "accessibility" in args:
+            return Result("")
+        if "battery" in args:
+            return Result("AC powered: false\nUSB powered: false\n")
+        if "activity" in args:
+            return Result(next(dumpsys_script))
+        if "date" in args:
+            return Result("1792895595")
+        return Result("")
+
+    doctor = SimpleNamespace(success=True, data={"failedChecks": [], "missingPermissions": []})
+    kit = PerfKit(
+        adb_path=fake_adb(tmp_path),
+        serial="749622c9",
+        runs_dir=tmp_path / "runs",
+        store=PerfStore(tmp_path / "data" / "mobile_perf.db"),
+        gate=FileLockGate(tmp_path / "gate-leases"),
+        device_call=fake_call,
+        doctor_fn=lambda: doctor,
+        dialog_probe=lambda: CheckResult("dialog_probe", "skipped", {"reason": "test"}),
+    )
+
+    report = kit.ensure_ready()
+
+    fg_events = [e for e in report.events if e.get("kind") == "foreground"]
+    assert len(fg_events) == 1
+    detail = fg_events[0]["detail"]
+    assert detail["phase"] == "after_ready"
+    assert detail["observed"] == "com.alipay.hulu"
+    assert detail["restored"] is True
+    assert any(args[-4:-1] == ["am", "start", "-n"] for args in recorded)

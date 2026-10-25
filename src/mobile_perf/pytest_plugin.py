@@ -126,7 +126,7 @@ class _PerfSession:
 
     def __init__(
         self,
-        fixture: "PerfFixture",
+        fixture: PerfFixture,
         target: str,
         items: list[str],
         judge_spec: Any | None,
@@ -220,7 +220,6 @@ def mobile_perf_kit(request: pytest.FixtureRequest):
     if not request.config.getoption("--mobile-perf"):
         return None
     from .kit import PerfKit
-    from .store import PerfStore
 
     config = request.config
     serial = config.getoption("--mobile-perf-serial") or config.getini(
