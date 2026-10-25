@@ -205,6 +205,8 @@ verdict = kit.judge(report, JudgeSpec(baseline="bili-home-v3",
 
 canonical key 为全组件唯一词汇（judge/report/store/CLI/宿主只见 canonical key）；中文原始列名的映射只存在于此。报告展示用字典的双语标签。
 
+**派生指标（同源统计）**：不映射 SoloPi 原始列、由同源数据二次统计得到的指标，source 沿用来源（如 `solo_pi`），在字典中登记 canonical key、双语标签与单位，并在模块文档写明口径。卡顿分级即此类（见 §7 附注）。
+
 ### 6.5 pytest 钩子（对称 moblie-auto 的 `--mobile-evidence`）
 
 ```python
@@ -246,6 +248,15 @@ mobile-perf trend <pkg> --metric mem_pss_mb
 | `battery_current_ma` | 电流列（校准） | solo_pi | mA |
 | `temp_battery_c` | — | pc_supplement | °C |
 | `gpu_util_pct` | — | pc_supplement | % |
+| `app_jank_light_count` | 派生自 最长延迟时间(ms) | solo_pi | 次 |
+| `app_jank_heavy_count` | 派生自 最长延迟时间(ms) | solo_pi | 次 |
+| `app_jank_severe_count` | 派生自 最长延迟时间(ms) | solo_pi | 次 |
+
+**附注：卡顿分级口径与设计偏差（ticket 14，对真实 CSV 校准）**
+
+- 真实 SoloPi FPS 采集只有 `帧率(帧)` / `延迟次数(次)` / `延迟占比(%)` / `最长延迟时间(ms)` 四列；`最长延迟时间` 是每个采样窗口（约 1 s）的单值，**不存在逐帧延迟分布**。
+- 因此分级实现为"会话内超阈值窗口次数"：每个窗口的最长延迟严格大于阈值即计该档一次，分桶互斥（只计最高档）；默认 >100 ms 轻、>300 ms 重、>700 ms 严重，阈值归宿主（`collect --jank-threshold` 或 `jank_thresholds_ms` 参数，不入库，随 meta.json 记录）。
+- 与"逐帧卡顿分级"的偏差如实保留：窗口级计数会低估同一窗口内的多次卡顿；若上游将来在 SoloPi 端侧增加逐帧分布列（低成本二开位），再升级口径。
 
 ---
 
