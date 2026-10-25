@@ -1,6 +1,6 @@
 """CLI 的单元测试：参数解析、serial 解析顺序、collect 端到端（注入假 kit）。"""
 
-
+import json
 
 from mobile_perf import adb, cli
 
@@ -196,64 +196,75 @@ def test_cli_module_entry_point_exists():
     assert __main__.main is cli.main
 
 
-class StubGate:
-    """替身 gate：记录借用并放行。"""
+class DoctorStubKit:
+    """替身 kit：ensure_ready 返回注入的报告（或抛注入的异常）。"""
 
-    instances = []
+    def __init__(self, adb_path=None, serial=None, report=None, error=None):
+        self.adb_path = adb_path
+        self.serial = serial
+        self._report = report
+        self._error = error
 
-    def __init__(self, *args, **kwargs):
-        self.borrows = []
-        StubGate.instances.append(self)
-
-    def borrow(self, serial, *, purpose, timeout_s=10.0):
-        self.borrows.append((serial, purpose))
-
-        class Token:
-            def __enter__(self):
-                return None
-
-            def __exit__(self, *exc):
-                return False
-
-        return Token()
+    def ensure_ready(self):
+        if self._error is not None:
+            raise self._error
+        return self._report
 
 
-class BusyGate(StubGate):
-    def borrow(self, serial, *, purpose, timeout_s=10.0):
-        from mobile_perf.gate import GateBusyError
+def make_readiness_report(**overrides):
+    from mobile_perf.keeper import CheckResult, ReadinessReport
 
-        raise GateBusyError(f"设备 {serial} 正被其他进程占用（purpose={purpose}）")
-
-
-def test_doctor_borrows_gate_around_harness_doctor(tmp_path, monkeypatch):
-    import types
-
-    import mobile_perf.solo as solo_module
-
-    calls = []
-    monkeypatch.setattr(
-        solo_module,
-        "doctor",
-        lambda adb_path, serial: calls.append((adb_path, serial))
-        or types.SimpleNamespace(data={"ok": True}, success=True),
+    defaults = dict(
+        serial="749622c9",
+        ok=True,
+        needs_attention=False,
+        healed=False,
+        checks=(CheckResult("connection", "ok", {"serial": "749622c9"}),),
+        events=(),
+        degraded_items=(),
+        foreground_package="tv.danmaku.bili",
+        clock_offset_s=0.5,
     )
-    StubGate.instances = []
-    monkeypatch.setattr(cli, "FileLockGate", StubGate)
+    defaults.update(overrides)
+    return ReadinessReport(**defaults)
 
+
+def test_doctor_prints_readiness_report_and_exits_zero(tmp_path, capsys):
+    kits = []
     exit_code = cli.main(
-        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: kits.append(
+            DoctorStubKit(**kwargs, report=make_readiness_report())
+        )
+        or kits[0],
     )
 
     assert exit_code == 0
-    assert StubGate.instances[0].borrows == [("749622c9", "mobile_perf.doctor")]
-    assert calls and calls[0][1] == "749622c9"
+    assert kits[0].serial == "749622c9"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["serial"] == "749622c9"
 
 
-def test_doctor_gate_busy_fails_fast_with_nonzero_exit(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "FileLockGate", BusyGate)
+def test_doctor_not_ready_exits_nonzero(tmp_path, capsys):
+    report = make_readiness_report(ok=False, needs_attention=True)
+    exit_code = cli.main(
+        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: DoctorStubKit(**kwargs, report=report),
+    )
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().out)["needsAttention"] is True
+
+
+def test_doctor_gate_busy_fails_fast_with_nonzero_exit(tmp_path):
+    from mobile_perf.gate import GateBusyError
 
     exit_code = cli.main(
-        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: DoctorStubKit(
+            **kwargs, error=GateBusyError("设备 749622c9 正被其他进程占用")
+        ),
     )
 
     assert exit_code == 1

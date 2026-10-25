@@ -12,7 +12,7 @@ import os
 import sys
 
 from .adb import first_online_device, resolve_adb
-from .gate import FileLockGate, GateBusyError
+from .gate import GateBusyError
 from .kit import CollectError, PerfKit
 
 DEFAULT_ITEMS = "CPU,Memory"  # 不含 FPS：FPS 每次启动弹告知框，无人值守不可用
@@ -24,7 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    doctor_parser = sub.add_parser("doctor", help="设备巡检（借 Harness doctor）")
+    doctor_parser = sub.add_parser(
+        "doctor", help="巡检+自愈：doctor/tcpip 自愈/无障碍/充电/前台/时钟"
+    )
     doctor_parser.add_argument("--serial", help="设备 serial")
     doctor_parser.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
 
@@ -56,22 +58,23 @@ def _resolve_serial(explicit: str | None, adb_path: str) -> str | None:
     return first_online_device(adb_path)
 
 
-def _run_doctor(args: argparse.Namespace) -> int:
-    from . import solo
-
+def _run_doctor(args: argparse.Namespace, kit_factory=None) -> int:
     adb_path = str(resolve_adb(args.adb))
     serial = _resolve_serial(args.serial, adb_path)
     if not serial:
         print("[mobile-perf] 未找到在线设备，请用 --serial 指定", file=sys.stderr)
         return 1
+    if kit_factory is not None:
+        kit = kit_factory(adb_path=adb_path, serial=serial)
+    else:
+        kit = PerfKit(adb_path=adb_path, serial=serial)
     try:
-        with FileLockGate().borrow(serial, purpose="mobile_perf.doctor"):
-            result = solo.doctor(adb_path, serial)
+        report = kit.ensure_ready()
     except GateBusyError as exc:
         print(f"[mobile-perf] 设备忙: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result.data, ensure_ascii=False, indent=2))
-    return 0 if result.success else 1
+    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    return 0 if report.ok else 1
 
 
 def _run_collect(args: argparse.Namespace, kit_factory) -> int:
@@ -120,7 +123,7 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
 def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
-        return _run_doctor(args)
+        return _run_doctor(args, kit_factory)
     if args.command == "collect":
         return _run_collect(args, kit_factory)
     build_parser().error(f"未知命令: {args.command}")

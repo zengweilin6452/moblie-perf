@@ -11,8 +11,11 @@ from . import collector, solo
 from . import report as report_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
+from .keeper import Keeper, ReadinessReport
 from .session import CollectSession
 from .store import PerfStore
+
+KEEPER_BORROW_PURPOSE = "mobile_perf.keeper"
 
 
 class CollectError(RuntimeError):
@@ -83,6 +86,9 @@ class PerfKit:
         gate: DeviceGate | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        device_call: Callable[..., Any] | None = None,
+        doctor_fn: Callable[[], Any] | None = None,
+        dialog_probe: Callable[[], Any] | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -95,6 +101,11 @@ class PerfKit:
         self._gate = gate
         self._clock = clock
         self._sleep = sleep
+        self._device_call = device_call
+        self._doctor_fn = doctor_fn
+        self._dialog_probe = dialog_probe
+        self._keeper: Keeper | None = None
+        self.last_readiness: ReadinessReport | None = None
 
     @property
     def backend(self) -> CollectBackend:
@@ -115,6 +126,34 @@ class PerfKit:
         """在短事务借用窗口内执行一个设备命令（ADR-0001：完成即还）。"""
         with self.gate.borrow(self.serial, purpose=purpose):
             return action()
+
+    def ensure_ready(self) -> ReadinessReport:
+        """巡检自愈（幂等可重入）：doctor + tcpip 自愈 + 无障碍/充电/前台/时钟检查。
+
+        所有巡检动作各为短事务借用（复用 _borrowed），完成即还、不持设备权。
+        返回的 ReadinessReport 含 degraded_items（充电时 Battery/温度降级）与
+        needs_attention（无障碍假开启），供编排层降级与告警；事件随报告返回，
+        入库由持有 store 的编排层完成。
+        """
+        if self._keeper is None:
+            from .keeper import default_call_device, default_run_doctor
+
+            raw_call = self._device_call or default_call_device(str(self.adb_path))
+            raw_doctor = self._doctor_fn or default_run_doctor(
+                str(self.adb_path), self.serial, repo_root=str(self._repo_root)
+            )
+            self._keeper = Keeper(
+                adb_path=str(self.adb_path),
+                serial=self.serial,
+                call_device=lambda args, timeout_s=15.0: self._borrowed(
+                    KEEPER_BORROW_PURPOSE, lambda: raw_call(args, timeout_s)
+                ),
+                run_doctor=lambda: self._borrowed(KEEPER_BORROW_PURPOSE, raw_doctor),
+                dialog_probe=self._dialog_probe,
+            )
+        report = self._keeper.run()
+        self.last_readiness = report
+        return report
 
     def run_collect(
         self,
