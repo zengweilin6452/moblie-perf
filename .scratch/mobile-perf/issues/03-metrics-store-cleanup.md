@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-03 五笔提交已合并进 mobile-perf-dev @ 7c6cdc0，kit.py 常量冲突取并集；合并后 169 unit/contract + 真机 device 3 通过。指标字典按真实 CSV 修正：列名带单位后缀、新增 mem_global_mb/battery_current_avg_ma/battery_power_mw 等、battery_pct 真机无电量列映射留空待上游确认；17 个真机 CSV 已入 tests/fixtures 作契约基线）
 
 - [ ] 指标字典对真实 CSV 校准定稿；contract 测试锁住中文列名映射（上游列名变化即测试红）
 - [ ] 连续两次 collect 后 sessions/metrics 表有正确聚合行（device 验证）
