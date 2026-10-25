@@ -61,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     collect_parser.add_argument(
+        "--jank-threshold",
+        help=(
+            "卡顿分级阈值（ticket 14）：light:100,heavy:300,severe:700（ms，严格大于"
+            "才计数）；不传用组件默认 100/300/700。阈值归宿主、不入库"
+        ),
+    )
+    collect_parser.add_argument(
         "--device-profile",
         help="设备档案（机型+OS 大版本；趋势与基线的可比性单位，默认不记录）",
     )
@@ -154,6 +161,12 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
         print("[mobile-perf] --items 至少需要一个采集项", file=sys.stderr)
         return 1
 
+    try:
+        jank_thresholds = _parse_jank_thresholds(args.jank_threshold)
+    except ValueError as exc:
+        print(f"[mobile-perf] collect 参数错误: {exc}", file=sys.stderr)
+        return 1
+
     kit = _build_kit(
         kit_factory,
         adb_path=adb_path,
@@ -170,6 +183,7 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
             host_run_id=args.run_id,
             runs_dir=args.runs_dir,
             start_mode=args.start_mode,
+            jank_thresholds_ms=jank_thresholds,
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)
@@ -183,6 +197,30 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
+
+
+def _parse_jank_thresholds(raw: str | None) -> dict[str, float] | None:
+    """解析 ``light:100,heavy:300,severe:700`` 形式的分级阈值（宿主显式传入）。
+
+    未传返回 None（组件默认口径）；格式错误或阈值非法抛 ValueError。
+    """
+    if raw is None:
+        return None
+    from . import jank as jank_module
+
+    thresholds: dict[str, float] = {}
+    for item in raw.split(","):
+        grade, _, value = item.partition(":")
+        if not grade or not value:
+            raise ValueError(f"分级阈值 {item!r} 格式应为 <grade>:<ms>")
+        try:
+            thresholds[grade.strip()] = float(value)
+        except ValueError:
+            raise ValueError(f"分级阈值 {item!r} 的毫秒数不是数字") from None
+    try:
+        return jank_module.validate_thresholds(thresholds)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def _parse_thresholds(specs: list[str]) -> dict[str, tuple[str, float, str]]:

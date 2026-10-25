@@ -5,6 +5,8 @@ finalize 停止采集并走完整归档/入库/报告链路——pytest 钩子�
 共用这条接缝，run_collect 是它的定时收口特例。
 """
 
+from pathlib import Path
+
 import pytest
 from tests.unit.test_kit import FakeHarnessBackend, fake_adb, make_kit
 
@@ -247,3 +249,87 @@ def test_collect_without_spec_or_target_raises(tmp_path):
 
     with pytest.raises(TypeError, match="SessionSpec|target"):
         kit.collect()
+
+
+class FpsFakeBackend(FakeHarnessBackend):
+    """FPS 采集后端：产物含「最长延迟时间」逐窗口列，覆盖三档分级。"""
+
+    def stop(self, session_id, output_dir):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        rows = ["RecordTime,最长延迟时间(ms),extra,SimpleTime"]
+        rows += [
+            f"{1792895595000 + i * 1000},{value},tv.danmaku.bili,{i}"
+            for i, value in enumerate([20.0, 150.0, 400.0, 900.0])
+        ]
+        Path(output_dir).joinpath("最长延迟时间_FPS_fake.csv").write_text(
+            "\n".join(rows) + "\n", encoding="gb18030"
+        )
+        return {
+            "success": True,
+            "state": "stopped",
+            "sessionId": session_id,
+            "artifacts": {"performance": {"localDir": str(output_dir)}},
+        }
+
+
+def test_collect_ingests_jank_grades_from_fps_artifacts(tmp_path):
+    """FPS 采集自动带出分级：新 key 进 metricsSummary、入库、报告双语标签。"""
+    kit = make_kit(tmp_path, FpsFakeBackend())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU", "FPS"],
+        duration_s=30.0,
+        host_run_id="run-jank-1",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["app_jank_light_count"]["max"] == 1.0
+    assert summary["app_jank_heavy_count"]["max"] == 1.0
+    assert summary["app_jank_severe_count"]["max"] == 1.0
+    assert summary["app_jank_severe_count"]["labelZh"] == "严重卡顿窗口数(>700ms)"
+    assert summary["app_jank_severe_count"]["labelEn"] == "Severe jank windows (>700ms)"
+
+    rows = {row["metric_key"]: row for row in kit.store.fetch_metrics("run-jank-1")}
+    assert rows["app_jank_severe_count"]["max"] == 1.0
+    assert rows["app_jank_severe_count"]["unit"] == "次"
+
+
+def test_collect_without_fps_does_not_invent_jank_keys(tmp_path):
+    """只采 CPU/Memory 时不产出分级 key（不硬造 0 值）。"""
+    kit = make_kit(tmp_path, FakeHarnessBackend())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU", "Memory"],
+        duration_s=30.0,
+        host_run_id="run-jank-2",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+    )
+
+    assert not [key for key in report["metricsSummary"] if key.startswith("app_jank_")]
+
+
+def test_collect_accepts_custom_jank_thresholds(tmp_path):
+    """阈值归宿主：collect 可显式传分级阈值，聚合与报告口径一致。"""
+    kit = make_kit(tmp_path, FpsFakeBackend())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU", "FPS"],
+        duration_s=30.0,
+        host_run_id="run-jank-3",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+        jank_thresholds_ms={"light": 100.0, "heavy": 500.0, "severe": 800.0},
+    )
+
+    summary = report["metricsSummary"]
+    # 20/150/400/900：light=150+400 两例；900 超 800 只记 severe（互斥取最高档）
+    assert summary["app_jank_light_count"]["max"] == 2.0
+    assert summary["app_jank_heavy_count"]["max"] == 0.0
+    assert summary["app_jank_severe_count"]["max"] == 1.0
+    assert report["jank"]["thresholdsMs"] == {"light": 100.0, "heavy": 500.0, "severe": 800.0}

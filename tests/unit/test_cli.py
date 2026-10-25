@@ -26,7 +26,7 @@ class StubKit:
         self.calls = []
 
     def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None,
-                    start_mode=None):
+                    start_mode=None, jank_thresholds_ms=None):
         self.calls.append(
             {
                 "target": target,
@@ -35,6 +35,7 @@ class StubKit:
                 "host_run_id": host_run_id,
                 "runs_dir": runs_dir,
                 "start_mode": start_mode,
+                "jank_thresholds_ms": jank_thresholds_ms,
             }
         )
         return {"runId": host_run_id or "run-stub", "target": target}
@@ -719,3 +720,61 @@ def test_collect_rejects_unknown_start_mode(tmp_path):
             ],
             kit_factory=lambda **kwargs: StubKit(**kwargs),
         )
+
+
+# ---- ticket 14：collect --jank-threshold light:100,heavy:300,severe:700 ----
+
+def test_collect_passes_jank_thresholds_to_run_collect(tmp_path):
+    kits = []
+
+    exit_code = cli.main(
+        [
+            "collect",
+            "tv.danmaku.bili",
+            "--items",
+            "CPU,FPS",
+            "--jank-threshold",
+            "light:50,heavy:200,severe:500",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+
+    assert exit_code == 0
+    assert kits[0].calls[0]["jank_thresholds_ms"] == {
+        "light": 50.0,
+        "heavy": 200.0,
+        "severe": 500.0,
+    }
+
+
+def test_collect_without_jank_threshold_passes_none(tmp_path):
+    kits = []
+
+    cli.main(
+        ["collect", "tv.danmaku.bili", "--serial", "749622c9", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+
+    assert kits[0].calls[0]["jank_thresholds_ms"] is None
+
+
+def test_collect_rejects_malformed_jank_threshold(tmp_path):
+    exit_code = cli.main(
+        [
+            "collect",
+            "tv.danmaku.bili",
+            "--jank-threshold",
+            "light:50,heavy:20,severe:500",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: StubKit(**kwargs),
+    )
+
+    assert exit_code == 1

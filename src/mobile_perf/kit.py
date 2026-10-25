@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import collector, solo
+from . import jank as jank_module
 from . import metrics as metrics_module
 from . import report as report_module
 from . import startup as startup_module
@@ -123,6 +124,7 @@ class CollectScope:
         supplement: bool,
         supplement_interval_s: float,
         start_mode: str | None = None,
+        jank_thresholds_ms: dict[str, float] | None = None,
     ):
         self._kit = kit
         self.target = target
@@ -131,6 +133,11 @@ class CollectScope:
         self._supplement = supplement
         self._supplement_interval_s = supplement_interval_s
         self._start_mode = start_mode
+        self._jank_thresholds_ms = (
+            jank_module.validate_thresholds(jank_thresholds_ms)
+            if jank_thresholds_ms is not None
+            else None
+        )
         self._run_id = host_run_id or collector.new_run_id()
         runs_dir_path = Path(runs_dir) if runs_dir is not None else kit.runs_dir
         self._run_dir = collector.create_run_dir(runs_dir_path, self._run_id)
@@ -289,7 +296,12 @@ class CollectScope:
                 )
                 supplement_info["csv"] = str(csv_path)
 
-        merged_aggregates = aggregates + supplement_aggregates
+        # 卡顿分级（ticket 14）：从同一批 artifacts 的「最长延迟时间」逐窗口值
+        # 分桶计数；无 FPS 数据时为空，不硬造 0 值。走现有聚合入库通道。
+        jank_aggregates = jank_module.aggregate_from_artifacts(
+            self._artifacts_dir, self._jank_thresholds_ms
+        )
+        merged_aggregates = aggregates + supplement_aggregates + jank_aggregates
         # 启动编排结论（ticket 12）：ms 为单样本指标（聚合字段填单值），
         # 双路对照与失败明细随事件/meta 如实入库
         startup_result = self.startup
@@ -353,6 +365,11 @@ class CollectScope:
             "integrity": integrity,
             "supplement": supplement_info,
             "startup": startup_meta,
+            "jank": (
+                {"thresholdsMs": dict(self._jank_thresholds_ms)}
+                if self._jank_thresholds_ms is not None
+                else None
+            ),
         }
         collector.write_meta(self._run_dir, meta)
 
@@ -368,6 +385,7 @@ class CollectScope:
             series=report_module.series_from_artifacts(self._artifacts_dir),
             # events 先置空，事件入库后在落盘前回填（见下方）
             events=[],
+            jank_thresholds_ms=self._jank_thresholds_ms,
         )
 
         store = kit.store
@@ -932,6 +950,7 @@ class PerfKit:
         supplement: Any = _UNSET,
         supplement_interval_s: Any = _UNSET,
         start_mode: Any = _UNSET,
+        jank_thresholds_ms: dict[str, float] | None = None,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
@@ -984,6 +1003,7 @@ class PerfKit:
             supplement=supplement,
             supplement_interval_s=supplement_interval_s,
             start_mode=start_mode,
+            jank_thresholds_ms=jank_thresholds_ms,
         )
 
     def run_collect(
@@ -997,6 +1017,7 @@ class PerfKit:
         supplement: bool = True,
         supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
         start_mode: str | None = None,
+        jank_thresholds_ms: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
@@ -1022,6 +1043,7 @@ class PerfKit:
             supplement=supplement,
             supplement_interval_s=supplement_interval_s,
             start_mode=start_mode,
+            jank_thresholds_ms=jank_thresholds_ms,
         ) as scope:
             self._sleep(duration_s)
         # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口
