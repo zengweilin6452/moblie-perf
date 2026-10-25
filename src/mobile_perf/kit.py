@@ -599,7 +599,23 @@ class PerfKit:
                     ),
                 )
         self.last_readiness = report
+        self._record_device_status(report)
         return report
+
+    def _record_device_status(self, report: ReadinessReport) -> None:
+        """巡检结论落到 devices 表（§5）：needs_attention 如实入库，不粉饰。"""
+        if report.needs_attention:
+            status = "needs_attention"
+        elif report.ok:
+            status = "online"
+        else:
+            status = "offline"
+        self.store.upsert_device(
+            self.serial,
+            status=status,
+            device_profile=self.device_profile,
+            health=report.as_dict(),
+        )
 
     def trend(self, pkg: str, metric: str, profile: str | None = None) -> dict[str, Any]:
         """跨 run 的指标趋势对比（Q6：跨设备档案默认拒绝）。

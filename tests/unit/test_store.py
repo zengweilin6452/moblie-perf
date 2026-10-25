@@ -304,3 +304,92 @@ def test_concurrent_store_construction_on_fresh_db_is_safe(tmp_path):
     assert len(stores) == 8
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+# ---- devices 表（设计方案 §5）：设备状态如实入库 ----
+
+def test_device_upsert_and_fetch_round_trip(store):
+    store.upsert_device(
+        "749622c9",
+        status="online",
+        model="PICO 4",
+        os_version="12",
+        device_profile="PICO4-Android12",
+        health={"ok": True, "degradedItems": []},
+    )
+
+    (row,) = store.fetch_devices()
+
+    assert row["serial"] == "749622c9"
+    assert row["status"] == "online"
+    assert row["model"] == "PICO 4"
+    assert row["os_version"] == "12"
+    assert row["device_profile"] == "PICO4-Android12"
+    assert row["health"] == {"ok": True, "degradedItems": []}
+    assert row["updated_at"]
+
+
+def test_device_upsert_merges_partial_fields_and_updates_status(store):
+    """未提供的列保留旧值，status 以最新巡检结论为准（needs_attention 如实入库）。"""
+    store.upsert_device("749622c9", status="online", model="PICO 4")
+
+    store.upsert_device("749622c9", status="needs_attention", health={"bound": False})
+
+    (row,) = store.fetch_devices()
+    assert row["status"] == "needs_attention"
+    assert row["model"] == "PICO 4"
+    assert row["health"] == {"bound": False}
+
+
+def test_device_upsert_requires_serial(store):
+    with pytest.raises(ValueError, match="serial"):
+        store.upsert_device("", status="online")
+
+
+def test_ensure_ready_upserts_device_status(tmp_path):
+    """编排层巡检后设备状态入库：健康 → online；needs_attention 如实入库。"""
+    from tests.unit.test_kit import FakeHarnessBackend, make_kit
+
+    kit = make_kit(tmp_path, FakeHarnessBackend())
+    kit.ensure_ready()
+    (row,) = kit.store.fetch_devices()
+    assert row["serial"] == "749622c9"
+    assert row["status"] == "online"
+
+    # 无障碍可解析但未绑定我们的服务 → needs_attention 如实入库
+    needs_attention_call = make_needs_attention_device_call()
+    kit2 = make_kit(tmp_path, FakeHarnessBackend(), device_call=needs_attention_call)
+    report = kit2.ensure_ready()
+    assert report.needs_attention is True
+    (row2,) = kit2.store.fetch_devices()
+    assert row2["status"] == "needs_attention"
+    assert row2["health"]["needsAttention"] is True
+
+
+def make_needs_attention_device_call():
+    """巡检替身：无障碍 dump 可解析但 Bound 段为空（假开启形态）。"""
+    from types import SimpleNamespace
+
+    accessibility_dump = (
+        "ACCESSIBILITY MANAGER SERVICES (dumpsys accessibility)\n"
+        "  Enabled services:\n"
+        "    Service[com.other.app/com.other.app.OtherService]\n"
+        "  Bound services:\n"
+    )
+
+    def call(args, timeout_s=15.0):
+        if args == ["devices"]:
+            stdout = "List of devices attached\n749622c9\tdevice\n"
+        elif "accessibility" in args:
+            stdout = accessibility_dump
+        elif "battery" in args:
+            stdout = "AC powered: false\nUSB powered: false\nstatus: 4\n"
+        elif "activity" in args:
+            stdout = "  mResumedActivity: ActivityRecord{1 u0 tv.danmaku.bili/.MainActivity t42}\n"
+        elif "date" in args:
+            stdout = "1792895595"
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    return call

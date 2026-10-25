@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS runs_artifacts (
     dir_uri TEXT NOT NULL,
     PRIMARY KEY (run_id, dir_uri)
 );
+
+CREATE TABLE IF NOT EXISTS devices (
+    serial         TEXT PRIMARY KEY,
+    model          TEXT,
+    os_version     TEXT,
+    device_profile TEXT,
+    status         TEXT,
+    health_json    TEXT,
+    updated_at     TEXT
+);
 """
 
 _METRIC_FIELDS = ("min", "median", "mean", "max", "p90")
@@ -260,6 +270,54 @@ class PerfStore:
             "SELECT * FROM baselines WHERE name = ? ORDER BY metric_key", (name,)
         )
         return [dict(zip([d[0] for d in cursor.description], row, strict=True)) for row in cursor]
+
+    def upsert_device(
+        self,
+        serial: str,
+        *,
+        status: str,
+        model: str | None = None,
+        os_version: str | None = None,
+        device_profile: str | None = None,
+        health: dict[str, Any] | None = None,
+        updated_at: str | None = None,
+    ) -> None:
+        """upsert 设备状态行（§5 devices 表）：未提供的列保留旧值，status 以最新为准。"""
+        if not serial:
+            raise ValueError("device 记录必须包含 serial")
+        if updated_at is None:
+            updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        cursor = self._conn.execute(
+            "SELECT model, os_version, device_profile FROM devices WHERE serial = ?",
+            (serial,),
+        )
+        row = cursor.fetchone()
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO devices (
+                serial, model, os_version, device_profile, status, health_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                serial,
+                model if model is not None else (row[0] if row else None),
+                os_version if os_version is not None else (row[1] if row else None),
+                device_profile if device_profile is not None else (row[2] if row else None),
+                status,
+                json.dumps(health or {}, ensure_ascii=False),
+                updated_at,
+            ),
+        )
+        self._conn.commit()
+
+    def fetch_devices(self) -> list[dict[str, Any]]:
+        cursor = self._conn.execute("SELECT * FROM devices ORDER BY serial")
+        devices = []
+        for row in cursor:
+            record = dict(zip([d[0] for d in cursor.description], row, strict=True))
+            record["health"] = json.loads(record.pop("health_json") or "{}")
+            devices.append(record)
+        return devices
 
     def record_run_artifacts(self, run_id: str, dir_uris: list[str]) -> None:
         with self._conn:

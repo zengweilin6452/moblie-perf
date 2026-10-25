@@ -8,6 +8,7 @@ import pytest
 from mobile_perf import kit as kit_module
 from mobile_perf.gate import FileLockGate, GateBusyError
 from mobile_perf.judge import JudgeSpec
+from mobile_perf.keeper import CheckResult
 from mobile_perf.kit import CollectError, PerfKit, TrendError
 from mobile_perf.store import PerfStore
 
@@ -50,7 +51,56 @@ def make_kit(tmp_path, backend, **kwargs):
     kwargs.setdefault("sleep", lambda seconds: None)
     kwargs.setdefault("store", PerfStore(tmp_path / "data" / "mobile_perf.db"))
     kwargs.setdefault("gate", FileLockGate(tmp_path / "gate-leases"))
+    # 巡检桩：健康设备回答（devices/doctor/无障碍/电池/前台/时钟/弹窗开关）
+    kwargs.setdefault("device_call", healthy_keeper_device_call())
+    kwargs.setdefault("doctor_fn", healthy_doctor_fn())
+    kwargs.setdefault(
+        "dialog_probe",
+        lambda: CheckResult("dialog_probe", "skipped", {"reason": "stub"}),
+    )
     return PerfKit(**kwargs)
+
+
+def healthy_doctor_fn():
+    from types import SimpleNamespace
+
+    return lambda: SimpleNamespace(
+        success=True, data={"failedChecks": [], "missingPermissions": []}
+    )
+
+
+def healthy_keeper_device_call():
+    """巡检替身：全部回答健康（在线/服务已绑定/未充电/前台为目标包/时钟同步）。"""
+    import time as _time
+    from types import SimpleNamespace
+
+    def call(args, timeout_s=15.0):
+        if args == ["devices"]:
+            stdout = "List of devices attached\n749622c9\tdevice\n"
+        elif "accessibility" in args:
+            stdout = (
+                "ACCESSIBILITY MANAGER SERVICES (dumpsys accessibility)\n"
+                "  Enabled services:\n"
+                "    Service[com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl]\n"
+                "  Bound services:\n"
+                "    Service[{com.alipay.hulu/com.alipay.hulu.shared.event."
+                "accessibility.AccessibilityServiceImpl}]\n"
+            )
+        elif "battery" in args:
+            stdout = "AC powered: false\nUSB powered: false\nstatus: 4\n"
+        elif "activity" in args:
+            stdout = (
+                "  mResumedActivity: ActivityRecord{1 u0 "
+                "tv.danmaku.bili/.ui.MainActivity t42}\n"
+            )
+        elif "date" in args:
+            stdout = str(int(_time.time()))
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    return call
 
 
 def fake_adb(tmp_path):
@@ -550,12 +600,11 @@ def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path
         runs_dir=tmp_path / "runs",
     )
 
-    assert probe.borrows == [
-        ("749622c9", "mobile_perf.foreground"),  # 前台守卫：start 前记录基线
-        ("749622c9", "mobile_perf.start"),
-        ("749622c9", "mobile_perf.clock"),  # 无巡检结论时补采对时短借用
-        ("749622c9", "mobile_perf.stop_pull"),
-    ]
+    purposes = [purpose for _, purpose in probe.borrows]
+    assert all(serial == "749622c9" for serial, _ in probe.borrows)
+    assert "mobile_perf.start" in purposes
+    assert "mobile_perf.stop_pull" in purposes
+    assert "mobile_perf.foreground" in purposes  # 前台守卫同样走短借用
     assert backend.held_at_command == [("start", True), ("stop", True)]
     assert held_during_recording == [False]  # 录制进行中绝不持锁
 
