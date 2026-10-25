@@ -207,6 +207,39 @@ class PerfStore:
             )
         return events
 
+    def record_baseline(
+        self,
+        *,
+        name: str,
+        metric_key: str,
+        value: float,
+        target_pkg: str | None = None,
+        device_profile: str | None = None,
+        source_run_id: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        """写入/替换一条基线行（主键 name+metric_key）；created_at 缺省取当前时间。"""
+        if not name or not metric_key:
+            raise ValueError("baseline 必须包含 name 与 metric_key")
+        if created_at is None:
+            created_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO baselines (
+                name, target_pkg, device_profile, metric_key, value,
+                source_run_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (name, target_pkg, device_profile, metric_key, value, source_run_id, created_at),
+        )
+        self._conn.commit()
+
+    def fetch_baseline(self, name: str) -> list[dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM baselines WHERE name = ? ORDER BY metric_key", (name,)
+        )
+        return [dict(zip([d[0] for d in cursor.description], row, strict=True)) for row in cursor]
+
     def record_run_artifacts(self, run_id: str, dir_uris: list[str]) -> None:
         with self._conn:
             self._conn.executemany(

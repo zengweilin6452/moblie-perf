@@ -450,3 +450,153 @@ def test_collect_gate_busy_fails_fast_with_nonzero_exit(tmp_path, monkeypatch):
     )
 
     assert exit_code == 1
+
+
+# ---- ticket 09：report --baseline 门禁接线 ----
+
+def _make_report_fixture(tmp_path, run_id="run-cli-judge"):
+    """落一个含 Memory 聚合的最小 run：meta.json + store 会话与指标。"""
+    from mobile_perf.store import PerfStore
+
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "runId": run_id,
+                "target": "tv.danmaku.bili",
+                "items": ["Memory"],
+                "serial": "749622c9",
+                "deviceProfile": "PICO4-Android12",
+                "startedAt": "2026-10-25T10:00:00",
+                "stoppedAt": "2026-10-25T10:00:30",
+                "durationS": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    db = tmp_path / "data" / "mobile_perf.db"
+    store = PerfStore(db)
+    store.record_session(
+        {
+            "run_id": run_id,
+            "target": "tv.danmaku.bili",
+            "serial": "749622c9",
+            "device_profile": "PICO4-Android12",
+            "run_dir": str(run_dir),
+        }
+    )
+    store.record_metrics(
+        run_id,
+        [
+            {
+                "metric_key": "mem_pss_mb",
+                "unit": "MB",
+                "source": "solo_pi",
+                "min": 100.0,
+                "median": 150.0,
+                "mean": 150.0,
+                "max": 200.0,
+                "p90": 190.0,
+                "sample_count": 30,
+            }
+        ],
+    )
+    return db, store
+
+
+def test_report_with_baseline_attaches_verdict_to_artifacts(tmp_path, capsys):
+    db, store = _make_report_fixture(tmp_path)
+    store.record_baseline(
+        name="bili-home-v3",
+        target_pkg="tv.danmaku.bili",
+        device_profile="PICO4-Android12",
+        metric_key="mem_pss_mb",
+        value=180.0,
+        source_run_id="run-baseline-src",
+    )
+    store.close()
+
+    exit_code = cli.main(
+        [
+            "report",
+            "run-cli-judge",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--db",
+            str(db),
+            "--baseline",
+            "bili-home-v3",
+            "--threshold",
+            "mem_pss_mb:lt:220:fail",
+            "--adb",
+            fake_adb(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["verdict"]["verdict"] == "passed"
+    report_data = json.loads(
+        (tmp_path / "runs" / "run-cli-judge" / "report.json").read_text(encoding="utf-8")
+    )
+    (check,) = report_data["verdict"]["checks"]
+    assert check["metricKey"] == "mem_pss_mb"
+    assert check["median"] == 150.0
+    assert check["threshold"] == 220.0
+    assert check["baselineValue"] == 180.0
+    assert check["sourceRunId"] == "run-cli-judge"
+
+
+def test_report_with_baseline_threshold_violation_fails_verdict(tmp_path, capsys):
+    db, store = _make_report_fixture(tmp_path)
+    store.record_baseline(
+        name="bili-home-v3", metric_key="mem_pss_mb", value=180.0
+    )
+    store.close()
+
+    exit_code = cli.main(
+        [
+            "report",
+            "run-cli-judge",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--db",
+            str(db),
+            "--baseline",
+            "bili-home-v3",
+            "--threshold",
+            "mem_pss_mb:lt:100:fail",
+            "--adb",
+            fake_adb(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["verdict"]["verdict"] == "failed"
+
+
+def test_report_baseline_bad_threshold_spec_returns_nonzero(tmp_path, capsys):
+    db, store = _make_report_fixture(tmp_path)
+    store.close()
+
+    exit_code = cli.main(
+        [
+            "report",
+            "run-cli-judge",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--db",
+            str(db),
+            "--baseline",
+            "bili-home-v3",
+            "--threshold",
+            "mem_pss_mb:notanop:220:fail",
+            "--adb",
+            fake_adb(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert "threshold" in capsys.readouterr().err.lower()

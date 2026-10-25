@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .adb import default_repo_root, first_online_device, resolve_adb
 from .gate import GateBusyError
+from .judge import JudgeSpec
 from .kit import CollectError, PerfKit, ProfileMismatchError, TrendError
 from .report import assemble_run_report, write_html, write_report
 from .store import PerfStore
@@ -61,6 +62,23 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("run_id", help="run 标识")
     report_parser.add_argument("--runs-dir", help="run 产物根目录（默认 <repo>/runs）")
     report_parser.add_argument("--db", help="SQLite 路径（默认 <repo>/data/mobile_perf.db）")
+    report_parser.add_argument(
+        "--adb", help="adb 可执行文件路径（默认走三级解析；仅构造 judge 门面用，不连设备）"
+    )
+    report_parser.add_argument(
+        "--baseline",
+        help="基线名（提供时对 run 执行门禁判定，结论附进报告与 stdout）",
+    )
+    report_parser.add_argument(
+        "--threshold",
+        action="append",
+        default=[],
+        metavar="METRIC:OP:VALUE:LEVEL",
+        help=(
+            "门禁阈值（宿主显式传入、不入库），可重复；"
+            "OP ∈ lt/le/gt/ge，LEVEL ∈ warn/fail，如 mem_pss_mb:lt:220:fail"
+        ),
+    )
 
     trend_parser = sub.add_parser("trend", help="跨 run 的指标趋势对比（Q6 跨档案默认拒绝）")
     trend_parser.add_argument("pkg", help="被测应用包名")
@@ -151,7 +169,22 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
     return 0
 
 
-def _run_report(args: argparse.Namespace) -> int:
+def _parse_thresholds(specs: list[str]) -> dict[str, tuple[str, float, str]]:
+    """解析 METRIC:OP:VALUE:LEVEL 形式的 CLI 阈值参数（宿主显式传入）。"""
+    thresholds: dict[str, tuple[str, float, str]] = {}
+    for raw in specs:
+        parts = raw.split(":")
+        if len(parts) != 4:
+            raise ValueError(f"阈值 {raw!r} 格式应为 METRIC:OP:VALUE:LEVEL")
+        metric, op, value, level = parts
+        try:
+            thresholds[metric] = (op, float(value), level)
+        except ValueError:
+            raise ValueError(f"阈值 {raw!r} 的 VALUE 不是数字") from None
+    return thresholds
+
+
+def _run_report(args: argparse.Namespace, kit_factory=None) -> int:
     repo_root = default_repo_root()
     db_path = args.db or repo_root / "data" / "mobile_perf.db"
     runs_dir = Path(args.runs_dir or repo_root / "runs")
@@ -166,6 +199,36 @@ def _run_report(args: argparse.Namespace) -> int:
         return 1
     run_dir = session.get("run_dir") or str(runs_dir / args.run_id)
     report_data = assemble_run_report(args.run_id, runs_dir=runs_dir, store=store)
+
+    verdict_payload = None
+    if args.baseline:
+        try:
+            thresholds = _parse_thresholds(args.threshold)
+        except ValueError as exc:
+            print(f"[mobile-perf] report 失败: --threshold 参数错误: {exc}", file=sys.stderr)
+            return 1
+        adb_path = str(resolve_adb(getattr(args, "adb", None)))
+        serial = session.get("serial") or _resolve_serial(None, adb_path)
+        if not serial:
+            print(
+                "[mobile-perf] report 失败: 无法确定设备 serial（judge 门面构造需要，"
+                "仅用于构造 kit，判定本身只读库不连设备）",
+                file=sys.stderr,
+            )
+            return 1
+        if kit_factory is not None:
+            kit = kit_factory(adb_path=adb_path, serial=serial, db_path=args.db)
+        else:
+            kit = PerfKit(adb_path=adb_path, serial=serial, db_path=args.db)
+        try:
+            spec = JudgeSpec(baseline=args.baseline, thresholds=thresholds)
+        except ValueError as exc:
+            print(f"[mobile-perf] report 失败: --threshold 参数错误: {exc}", file=sys.stderr)
+            return 1
+        verdict = kit.judge(report_data, spec)
+        verdict_payload = verdict.to_dict()
+        report_data["verdict"] = verdict_payload
+
     json_path = write_report(run_dir, report_data)
     html_path = write_html(run_dir, report_data)
     print(
@@ -175,6 +238,7 @@ def _run_report(args: argparse.Namespace) -> int:
                 "runDir": run_dir,
                 "reportJson": str(json_path),
                 "reportHtml": str(html_path),
+                **({"verdict": verdict_payload} if verdict_payload is not None else {}),
             },
             ensure_ascii=False,
             indent=2,
@@ -216,7 +280,7 @@ def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
     if args.command == "collect":
         return _run_collect(args, kit_factory)
     if args.command == "report":
-        return _run_report(args)
+        return _run_report(args, kit_factory)
     if args.command == "trend":
         return _run_trend(args, kit_factory)
     build_parser().error(f"未知命令: {args.command}")

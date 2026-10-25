@@ -14,6 +14,8 @@ from . import report as report_module
 from . import supplement as supplement_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
+from .judge import JudgeSpec, Verdict
+from .judge import judge as _judge_report
 from .keeper import Keeper, ReadinessReport
 from .session import CollectSession
 from .store import PerfStore
@@ -114,6 +116,7 @@ class PerfKit:
         doctor_fn: Callable[[], Any] | None = None,
         dialog_probe: Callable[[], Any] | None = None,
         device_profile: str | None = None,
+        logwatch_factory: Callable[..., Any] | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -134,6 +137,7 @@ class PerfKit:
         self._doctor_fn = doctor_fn
         self._dialog_probe = dialog_probe
         self.device_profile = device_profile
+        self._logwatch_factory = logwatch_factory
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
 
@@ -326,6 +330,53 @@ class PerfKit:
         self._supplement_offset = (offset, offset_source)
         poller.start()
         return poller
+    def save_baseline(
+        self,
+        report: dict[str, Any],
+        name: str,
+        metric_keys: list[str] | None = None,
+    ) -> int:
+        """把一个 run 的报告存为命名基线：每指标取 median 入 baselines 表。
+
+        基线绑定报告的 target 与 device_profile（可比性单位）；thresholds 不入库。
+        metric_keys 未传时保存报告里全部指标。返回写入行数。
+        """
+        metrics_summary = report.get("metricsSummary")
+        if not metrics_summary:
+            raise ValueError("报告缺少 metricsSummary 聚合数据，无法保存基线")
+        rows = 0
+        for metric_key, entry in sorted(metrics_summary.items()):
+            if metric_keys is not None and metric_key not in metric_keys:
+                continue
+            self.store.record_baseline(
+                name=name,
+                target_pkg=report.get("target"),
+                device_profile=report.get("deviceProfile"),
+                metric_key=metric_key,
+                value=entry.get("median"),
+                source_run_id=report.get("runId"),
+            )
+            rows += 1
+        return rows
+
+    def judge(self, report: dict[str, Any], spec: JudgeSpec) -> Verdict:
+        """门禁判定门面：从 store 解析基线（值与绑定档案）后交给纯函数 judge。
+
+        基线不存在或无数据时以空解析结果传入，纯函数按前置不满足判 not_tested；
+        宿主持有的 JudgeSpec 不被修改（解析结果经 resolved 副本注入）。
+        """
+        rows = self.store.fetch_baseline(spec.baseline)
+        profile = next(
+            (row.get("device_profile") for row in rows if row.get("device_profile")), None
+        )
+        data = {
+            row["metric_key"]: {
+                "value": row.get("value"),
+                "sourceRunId": row.get("source_run_id"),
+            }
+            for row in rows
+        }
+        return _judge_report(report, spec.resolved(profile=profile, data=data))
 
     def run_collect(
         self,
@@ -369,15 +420,23 @@ class PerfKit:
         self._supplement_offset = (0.0, "assumed")
         poller = self._start_supplement(supplement, supplement_interval_s)
         supplement_result = None
+        watcher: Any | None = None
+        watch_warnings: list[dict[str, Any]] = []
+        watch_events: list[dict[str, Any]] = []
         try:
+            watcher = self._start_crash_watch(target, watch_warnings)
             self._sleep(duration_s)
         finally:
             # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
             # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
             if poller is not None:
                 supplement_result = poller.stop()
-            # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
-            record = session.stop(str(artifacts_dir))
+            try:
+                # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
+                record = session.stop(str(artifacts_dir))
+            finally:
+                # 监听是旁路进程：采集停止后立即回收，不悬挂
+                watch_events = self._stop_crash_watch(watcher)
 
         artifact_files = collector.validate_artifacts(artifacts_dir)
 
@@ -467,11 +526,9 @@ class PerfKit:
             metrics_summary=metrics_summary,
             integrity=integrity,
             series=report_module.series_from_artifacts(artifacts_dir),
-            # 事件时间轴归 07 号工单接入；此处保留空注入点
+            # events 先置空，事件入库后在落盘前回填（见下方）
             events=[],
         )
-        report_module.write_report(run_dir, report_data)
-        report_module.write_html(run_dir, report_data)
 
         store = self.store
         store.record_session(
@@ -503,6 +560,13 @@ class PerfKit:
                     "errors": supplement_info.get("errors"),
                 },
             )
+        # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
+        for event in watch_events:
+            store.record_event(
+                run_id, kind=event["kind"], detail=event["detail"], ts=event["ts"]
+            )
+        for warning in watch_warnings:
+            store.record_event(run_id, kind="logwatch_warning", detail=dict(warning))
         if integrity_report is not None and not integrity_report.ok:
             reason = (
                 "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
@@ -535,4 +599,42 @@ class PerfKit:
             )
         except Exception:  # noqa: BLE001 - 清理失败只告警
             logger.exception("本地保留策略清理失败")
+
+        # 报告最后落盘：events 已入库，随 run 数据返回供报告时间轴渲染
+        report_data["events"] = store.fetch_events(run_id)
+        report_module.write_report(run_dir, report_data)
+        report_module.write_html(run_dir, report_data)
         return report_data
+
+    def _start_crash_watch(self, target: str, warnings: list[dict[str, Any]]) -> Any | None:
+        """采集期间启动 crash/ANR 旁路监听；启动失败只告警，不阻断采集闭环。"""
+        offset = self.last_readiness.clock_offset_s if self.last_readiness else None
+        factory = self._logwatch_factory
+        if factory is None:
+            from .logwatch import LogWatch
+
+            def factory(*, packages: list[str], clock_offset_s: float | None) -> Any:
+                return LogWatch(
+                    adb_path=str(self.adb_path),
+                    serial=self.serial,
+                    packages=packages,
+                    clock_offset_s=clock_offset_s,
+                )
+
+        try:
+            watcher = factory(packages=[target], clock_offset_s=offset)
+            watcher.start()
+            return watcher
+        except Exception as exc:  # noqa: BLE001 - 监听缺失如实记录为事件
+            logger.warning("logwatch 启动失败，crash/ANR 监听缺失: %s", exc)
+            warnings.append({"reason": str(exc)})
+            return None
+
+    def _stop_crash_watch(self, watcher: Any | None) -> list[dict[str, Any]]:
+        if watcher is None:
+            return []
+        try:
+            return list(watcher.stop())
+        except Exception:  # noqa: BLE001 - 停止失败不阻断采集闭环
+            logger.exception("logwatch 停止异常")
+            return []

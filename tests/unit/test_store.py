@@ -207,3 +207,68 @@ def test_delete_run_keeps_other_runs_rows(store):
 
     assert [r["run_id"] for r in store.fetch_sessions()] == ["run-keep"]
     assert [r["metric_key"] for r in store.fetch_metrics("run-keep")] == ["mem_pss_mb"]
+
+
+def test_baseline_record_and_fetch_round_trip(store):
+    store.record_baseline(
+        name="bili-home-v3",
+        target_pkg="tv.danmaku.bili",
+        device_profile="PICO4-Android12",
+        metric_key="mem_pss_mb",
+        value=180.5,
+        source_run_id="run-20261025-100000-ab12",
+        created_at="2026-10-25T10:00:00+08:00",
+    )
+    store.record_baseline(
+        name="bili-home-v3",
+        target_pkg="tv.danmaku.bili",
+        device_profile="PICO4-Android12",
+        metric_key="cpu_app_pct",
+        value=12.0,
+        source_run_id="run-20261025-100000-ab12",
+        created_at="2026-10-25T10:00:00+08:00",
+    )
+
+    rows = store.fetch_baseline("bili-home-v3")
+
+    assert {row["metric_key"] for row in rows} == {"mem_pss_mb", "cpu_app_pct"}
+    mem = next(row for row in rows if row["metric_key"] == "mem_pss_mb")
+    assert mem["name"] == "bili-home-v3"
+    assert mem["target_pkg"] == "tv.danmaku.bili"
+    assert mem["device_profile"] == "PICO4-Android12"
+    assert mem["value"] == 180.5
+    assert mem["source_run_id"] == "run-20261025-100000-ab12"
+    assert mem["created_at"] == "2026-10-25T10:00:00+08:00"
+
+
+def test_baseline_fetch_unknown_name_returns_empty(store):
+    assert store.fetch_baseline("no-such-baseline") == []
+
+
+def test_baseline_upsert_same_name_metric_replaces_value(store):
+    store.record_baseline(
+        name="bili-home-v3",
+        metric_key="mem_pss_mb",
+        value=180.0,
+        source_run_id="run-old",
+    )
+    store.record_baseline(
+        name="bili-home-v3",
+        metric_key="mem_pss_mb",
+        value=200.0,
+        source_run_id="run-new",
+    )
+
+    rows = store.fetch_baseline("bili-home-v3")
+
+    assert len(rows) == 1
+    assert rows[0]["value"] == 200.0
+    assert rows[0]["source_run_id"] == "run-new"
+
+
+def test_baseline_created_at_defaults_to_local_iso_now(store):
+    store.record_baseline(name="bili-home-v3", metric_key="mem_pss_mb", value=1.0)
+
+    (row,) = store.fetch_baseline("bili-home-v3")
+
+    assert row["created_at"]  # 写入时自动补时间戳
