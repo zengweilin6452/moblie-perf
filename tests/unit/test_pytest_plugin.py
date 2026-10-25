@@ -209,3 +209,74 @@ def test_perf_session_runs_ensure_ready_before_collect(pytester):
     )
     result = pytester.runpytest()
     result.assert_outcomes(passed=1)
+
+
+_MARKER_TEST = """
+import pytest
+
+def _save(kit, name):
+    kit.store.record_baseline(
+        name=name, target_pkg="tv.danmaku.bili", device_profile=None,
+        metric_key="mem_pss_mb", value=43.0, source_run_id="run-baseline",
+    )
+
+@pytest.mark.mobile_perf_baseline("bili-marked")
+def test_marked(perf):
+    _save(perf.kit, "bili-marked")
+    with perf.session(
+        "tv.danmaku.bili", items=["CPU"],
+        thresholds={"mem_pss_mb": ("lt", 100, "fail")}, min_samples=1,
+    ) as scope:
+        pass
+    assert perf.results[0].verdict.baseline == "bili-marked"
+
+def test_global(perf):
+    _save(perf.kit, "bili-global")
+    with perf.session(
+        "tv.danmaku.bili", items=["CPU"],
+        thresholds={"mem_pss_mb": ("lt", 100, "fail")}, min_samples=1,
+    ) as scope:
+        pass
+    assert perf.results[0].verdict.baseline == "bili-global"
+"""
+
+
+def test_case_level_baseline_marker_wins_over_global(pytester):
+    """A6：@pytest.mark.mobile_perf_baseline 用例级优先于全局 --mobile-perf-baseline。"""
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(_MARKER_TEST)
+    result = pytester.runpytest("--mobile-perf-baseline", "bili-global")
+    result.assert_outcomes(passed=2)
+
+
+def test_session_baseline_param_wins_over_marker(pytester):
+    """优先级：session(baseline=) 显式参数 > 用例标记 > 全局选项。"""
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.mobile_perf_baseline("bili-marked")
+        def test_param_wins(perf):
+            perf.kit.store.record_baseline(
+                name="bili-param", target_pkg="tv.danmaku.bili", device_profile=None,
+                metric_key="mem_pss_mb", value=43.0, source_run_id="run-baseline",
+            )
+            with perf.session(
+                "tv.danmaku.bili", items=["CPU"], baseline="bili-param",
+                thresholds={"mem_pss_mb": ("lt", 100, "fail")}, min_samples=1,
+            ) as scope:
+                pass
+            assert perf.results[0].verdict.baseline == "bili-param"
+        """
+    )
+    result = pytester.runpytest("--mobile-perf-baseline", "bili-global")
+    result.assert_outcomes(passed=1)
+
+
+def test_mobile_perf_baseline_marker_is_registered(pytester):
+    """标记已注册：--strict-markers 下用例标记不再被判为未知标记。"""
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(_MARKER_TEST)
+    result = pytester.runpytest("--mobile-perf-baseline", "bili-global", "--strict-markers")
+    result.assert_outcomes(passed=2)

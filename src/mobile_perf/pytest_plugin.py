@@ -63,6 +63,14 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "mobile_perf_baseline(name): 用例级判读基线"
+        "（优先于 --mobile-perf-baseline，session(baseline=) 显式参数再优先于标记）",
+    )
+
+
 def _parse_threshold(token: str) -> tuple[str, tuple[str, float, str]]:
     metric, op, limit, level = token.strip().split(":")
     return metric, (op, float(limit), level)
@@ -198,9 +206,13 @@ class PerfFixture:
         from .judge import JudgeSpec
 
         config = self.request.config
-        baseline = baseline if baseline is not None else config.getoption(
-            "--mobile-perf-baseline"
-        )
+        if baseline is None:
+            # 用例级标记（A6）优先于全局选项；session(baseline=) 显式参数最优先
+            marker = self.request.node.get_closest_marker("mobile_perf_baseline")
+            if marker is not None and marker.args:
+                baseline = marker.args[0]
+        if baseline is None:
+            baseline = config.getoption("--mobile-perf-baseline")
         if thresholds is None:
             thresholds = _default_thresholds(config) or None
         judge_spec = None
