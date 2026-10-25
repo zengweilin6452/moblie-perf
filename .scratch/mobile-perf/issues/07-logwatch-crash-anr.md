@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-07 三笔提交已合并进 mobile-perf-dev（kit.py 冲突已解：事件回填后统一写盘双产物）；213 unit/contract + 真机 device 通过（am crash 实测入时间轴）。发现修复：logcat 需 -T 1 防历史 crash 重放。真机注意：MIUI 上 am crash 崩的是子进程，主缓冲可能无 FATAL，events buffer am_crash 路径已覆盖）
 
 - [ ] 采集期间人为制造 crash（可测 App）被捕获并入库，时间轴与会话/打标对齐
 - [ ] crash/anr 事件出现在该 run 的报告时间轴上
