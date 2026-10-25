@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-04 五笔提交已合并进 mobile-perf-dev @ 0346d2f；191 unit/contract + device 2 通过。离线 ECharts 5.5.1 已 vendor 进 assets/，断网验证含 agent-browser 实渲染 5 张曲线；trend 跨 profile 默认拒绝+显式覆盖。已知：HTML 内嵌 echarts 使每 run 报告约 +1MB 磁盘；events 时间轴渲染留 07 接入）
 
 - [ ] 断网环境打开 HTML 报告，图表正常渲染（无外部资源请求）
 - [ ] JSON 与 HTML 数据内容一致（同一份聚合数据源生成）
