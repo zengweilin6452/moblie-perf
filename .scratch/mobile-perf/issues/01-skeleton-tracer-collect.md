@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-01 六笔提交已快进合并进 mobile-perf-dev @ 41b822f；55 unit/contract + 1 device 真机冒烟通过。FPS 项冒烟用 CPU,Memory 替代——含 FPS 会弹告知框，等 M2 票 06 解决）
 
 - [ ] `pip install -e .` 后，`mobile-perf collect tv.danmaku.bili --duration 60` 对真机 749622c9 跑通采集→pull→runs/ 产物落盘（device 测试，`-m device` 门控；无设备时如实报告，不计为通过）
 - [ ] solo.py 以子进程调用 Harness，宿主进程 sys.path 未被注入、`timing` 等顶级模块名未被劫持（contract 测试证明）
