@@ -134,6 +134,15 @@ METRICS: dict[str, MetricSpec] = {
         # 计得，单样本入库（聚合字段填单值）；无 SoloPi 原始列
         MetricSpec("app_cold_start_ms", "ms", "pc_orchestration", "冷启动耗时", "Cold start time"),
         MetricSpec("app_warm_start_ms", "ms", "pc_orchestration", "温启动耗时", "Warm start time"),
+        # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
+        # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
+        MetricSpec(
+            "mem_pss_slope_mb_per_day",
+            "MB/day",
+            "analysis",
+            "应用PSS内存增长斜率",
+            "Process PSS memory growth slope",
+        ),
     )
 }
 

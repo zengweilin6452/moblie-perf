@@ -719,3 +719,72 @@ def test_collect_rejects_unknown_start_mode(tmp_path):
             ],
             kit_factory=lambda **kwargs: StubKit(**kwargs),
         )
+
+
+def test_leak_command_prints_json_and_passes_profile(tmp_path, capsys):
+    """ticket 13：mobile-perf leak 只读库，输出 JSON（含斜率与置信度）。"""
+    payload = {
+        "pkg": "com.sinosoft.trainapp",
+        "slopeMetricKey": "mem_pss_slope_mb_per_day",
+        "slopeMbPerDay": 1.5,
+        "confidence": "low",
+        "runs": [],
+    }
+    captured = {}
+
+    class LeakStubKit(StubKit):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captured["serial"] = kwargs.get("serial")
+
+        def leak_trend(self, pkg, profile=None, **kwargs):
+            captured["args"] = (pkg, profile, kwargs)
+            return payload
+
+    exit_code = cli.main(
+        [
+            "leak",
+            "com.sinosoft.trainapp",
+            "--profile",
+            "Xiaomi-2206123SC-Android14",
+            "--slope-threshold",
+            "2.0",
+            "--level",
+            "warn",
+            "--adb",
+            fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: LeakStubKit(**kwargs),
+    )
+
+    assert exit_code == 0
+    assert captured["serial"] is None
+    pkg, profile, kwargs = captured["args"]
+    assert pkg == "com.sinosoft.trainapp"
+    assert profile == "Xiaomi-2206123SC-Android14"
+    assert kwargs == {"slope_threshold": 2.0, "level": "warn"}
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_leak_command_profile_mismatch_and_trend_error_return_nonzero(tmp_path, capsys):
+    class MismatchKit(StubKit):
+        def leak_trend(self, pkg, profile=None, **kwargs):
+            raise cli.ProfileMismatchError("跨档案拒绝")
+
+    exit_code = cli.main(
+        ["leak", "com.sinosoft.trainapp", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: MismatchKit(**kwargs),
+    )
+    assert exit_code == 1
+    assert "跨档案拒绝" in capsys.readouterr().err
+
+    class ErrorKit(StubKit):
+        def leak_trend(self, pkg, profile=None, **kwargs):
+            raise cli.TrendError("无数据")
+
+    exit_code = cli.main(
+        ["leak", "com.sinosoft.trainapp", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: ErrorKit(**kwargs),
+    )
+    assert exit_code == 1
+    assert "无数据" in capsys.readouterr().err

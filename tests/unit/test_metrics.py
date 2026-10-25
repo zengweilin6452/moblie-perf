@@ -32,6 +32,8 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         # 启动编排指标（ticket 12，source=pc_orchestration）
         "app_cold_start_ms",
         "app_warm_start_ms",
+        # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）
+        "mem_pss_slope_mb_per_day",
     }
 
     assert set(metrics.METRICS) == expected
