@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-05 三笔提交已合并进 mobile-perf-dev @ 40f538e；104 unit/contract + device 真机验证 2 通过（巡检 ok、充电降级如实、时钟偏移 -3.2s 告警、幂等零副作用）。真机发现 dumpsys accessibility 实际格式与文档不符，解析器已按真实样本修正。needs_attention 事件入库待票 03 store 合并后接线；断线自愈真机场景留票 08）
 
 - [ ] 手机 adb tcpip 断开后，`ensure_ready()` / `mobile-perf doctor` 自动恢复连接
 - [ ] 无障碍假开启 → 设备标 needs_attention 并产生事件（不代开，如实暴露）
