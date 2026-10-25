@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from mobile_perf import adb, cli
 
 
@@ -23,7 +25,8 @@ class StubKit:
         self.device_profile = device_profile
         self.calls = []
 
-    def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None):
+    def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None,
+                    start_mode=None):
         self.calls.append(
             {
                 "target": target,
@@ -31,6 +34,7 @@ class StubKit:
                 "duration_s": duration_s,
                 "host_run_id": host_run_id,
                 "runs_dir": runs_dir,
+                "start_mode": start_mode,
             }
         )
         return {"runId": host_run_id or "run-stub", "target": target}
@@ -662,3 +666,56 @@ def test_report_baseline_without_serial_judges_from_session_record(tmp_path, cap
     assert exit_code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["verdict"]["verdict"] == "passed"
+
+
+# ---- ticket 12：collect --start-mode cold|warm ----
+
+def test_collect_passes_start_mode_to_run_collect(tmp_path):
+    kits = []
+
+    exit_code = cli.main(
+        [
+            "collect",
+            "com.sinosoft.trainapp",
+            "--items",
+            "CPU,Memory",
+            "--start-mode",
+            "cold",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+
+    assert exit_code == 0
+    assert kits[0].calls[0]["start_mode"] == "cold"
+
+
+def test_collect_without_start_mode_passes_none(tmp_path):
+    kits = []
+
+    cli.main(
+        ["collect", "com.sinosoft.trainapp", "--serial", "749622c9", "--adb", fake_adb(tmp_path)],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+
+    assert kits[0].calls[0]["start_mode"] is None
+
+
+def test_collect_rejects_unknown_start_mode(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "collect",
+                "com.sinosoft.trainapp",
+                "--start-mode",
+                "hot",
+                "--serial",
+                "749622c9",
+                "--adb",
+                fake_adb(tmp_path),
+            ],
+            kit_factory=lambda **kwargs: StubKit(**kwargs),
+        )

@@ -347,3 +347,98 @@ def test_write_html_without_supplement_series_has_no_combined_chart(tmp_path):
     html = path.read_text(encoding="utf-8")
 
     assert 'id="chart-combined-thermal-fps"' not in html
+
+
+# ---- ticket 12：启动时间与启动期曲线同图/同轴呈现 ----
+
+STARTUP_META = {
+    "mode": "cold",
+    "metricKey": "app_cold_start_ms",
+    "ms": 487.0,
+    "launchState": "COLD",
+    "waitTimeMs": 502.0,
+    "displayedMs": 501.0,
+    "deviationMs": 14.0,
+    "fullyDrawnMs": None,
+    "component": "com.sinosoft.trainapp/.MainActivity",
+    "status": "ok",
+    "error": None,
+    "elapsedS": 1.0,
+}
+
+
+def test_build_report_carries_startup_from_meta():
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    assert built["startup"] is None
+
+    built = report.build_report(
+        meta={**_meta(), "startup": STARTUP_META}, record=_record(), artifacts=[]
+    )
+
+    assert built["startup"] == STARTUP_META
+
+
+def test_write_html_renders_startup_section_and_markline(tmp_path):
+    built = report.build_report(
+        meta={**_meta(), "startup": STARTUP_META},
+        record=_record(),
+        artifacts=[],
+        metrics_summary={
+            "app_cold_start_ms": {"unit": "ms", "median": 487.0, "sampleCount": 1}
+        },
+        series={
+            "mem_pss_mb": {"unit": "MB", "labelZh": "应用PSS内存", "points": [[0.0, 42.0]]}
+        },
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "启动时间 / Startup" in html
+    assert "冷启动耗时" in html and "app_cold_start_ms" in html
+    assert "487" in html
+    assert "COLD" in html
+    assert "501" in html and "14" in html  # 双路对照与偏差
+    # 曲线上的启动点标记（同轴）
+    assert "markLine" in html and "1" in html
+    assert html.count("(function () {") == html.count("})();")
+
+
+def test_write_html_without_startup_has_no_markline(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        series={
+            "mem_pss_mb": {"unit": "MB", "labelZh": "应用PSS内存", "points": [[0.0, 42.0]]}
+        },
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    # vendor 压缩包本身含 markLine 字样，只检查自产脚本段
+    assert "markLine" not in _strip_vendor(html)
+
+
+def test_write_html_renders_startup_error_when_no_ms(tmp_path):
+    built = report.build_report(
+        meta={
+            **_meta(),
+            "startup": {
+                **STARTUP_META,
+                "ms": None,
+                "status": None,
+                "displayedMs": None,
+                "deviationMs": None,
+                "error": "am start 未成功启动: Activity class com.foo/.Missing does not exist.",
+            },
+        },
+        record=_record(),
+        artifacts=[],
+        series={},
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "启动时间 / Startup" in html
+    assert "does not exist" in html

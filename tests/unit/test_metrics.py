@@ -29,6 +29,9 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "battery_current_avg_ma",
         "battery_power_mw",
         "battery_power_avg_mw",
+        # 启动编排指标（ticket 12，source=pc_orchestration）
+        "app_cold_start_ms",
+        "app_warm_start_ms",
     }
 
     assert set(metrics.METRICS) == expected
