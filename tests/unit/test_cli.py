@@ -1,4 +1,4 @@
-"""CLI 的单元测试：参数解析、serial 解析顺序、collect 端到端（注入假 kit）。"""
+"""CLI 的单元测试：参数解析、serial 解析顺序、collect 端到端（注入假 kit）、report/trend。"""
 
 import json
 
@@ -14,10 +14,13 @@ def fake_adb(tmp_path):
 class StubKit:
     """替身 kit：记录 run_collect 调用并返回固定报告。"""
 
-    def __init__(self, adb_path=None, serial=None, runs_dir=None):
+    def __init__(self, adb_path=None, serial=None, runs_dir=None, db_path=None,
+                 device_profile=None):
         self.adb_path = adb_path
         self.serial = serial
         self.runs_dir = runs_dir
+        self.db_path = db_path
+        self.device_profile = device_profile
         self.calls = []
 
     def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None):
@@ -31,6 +34,26 @@ class StubKit:
             }
         )
         return {"runId": host_run_id or "run-stub", "target": target}
+
+
+def test_collect_passes_device_profile(tmp_path):
+    kits = []
+
+    cli.main(
+        [
+            "collect",
+            "tv.danmaku.bili",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+            "--device-profile",
+            "PICO4-Android12",
+        ],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+
+    assert kits[0].device_profile == "PICO4-Android12"
 
 
 def test_collect_parses_package_items_duration_and_options(tmp_path):
@@ -194,6 +217,137 @@ def test_cli_module_entry_point_exists():
     from mobile_perf import __main__
 
     assert __main__.main is cli.main
+
+
+def test_report_command_writes_dual_artifacts_from_store(tmp_path, capsys):
+    """mobile-perf report <runId>：从 runs/ 与 store 组装 JSON+HTML 双产物。"""
+    from mobile_perf.store import PerfStore
+
+    run_dir = tmp_path / "runs" / "run-cli-rep"
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "artifacts" / "performance.csv").write_text(
+        "RecordTime,PSS-main-1(MB),SimpleTime\n1000,10.0,0\n2000,20.0,1\n", encoding="gb18030"
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "runId": "run-cli-rep",
+                "target": "tv.danmaku.bili",
+                "items": ["Memory"],
+                "serial": "749622c9",
+                "startedAt": "2026-10-25T10:00:00",
+                "stoppedAt": "2026-10-25T10:00:30",
+                "durationS": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    db = tmp_path / "data" / "mobile_perf.db"
+    store = PerfStore(db)
+    store.record_session(
+        {"run_id": "run-cli-rep", "target": "tv.danmaku.bili", "run_dir": str(run_dir)}
+    )
+    store.close()
+
+    exit_code = cli.main(
+        [
+            "report",
+            "run-cli-rep",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--db",
+            str(db),
+        ]
+    )
+
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["runId"] == "run-cli-rep"
+    report_data = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert report_data["series"]["mem_pss_mb"]["points"] == [[0.0, 10.0], [1.0, 20.0]]
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert "vendor:echarts BEGIN" in html
+    embedded = json.loads(_embedded_json(html))
+    assert embedded == report_data
+
+
+def _embedded_json(html: str) -> str:
+    begin = html.index("window.__REPORT__ =") + len("window.__REPORT__ =")
+    end = html.index(";</script>", begin)
+    return html[begin:end].replace("<\\/", "</")
+
+
+def test_report_command_unknown_run_returns_nonzero(tmp_path, capsys):
+    from mobile_perf.store import PerfStore
+
+    db = tmp_path / "data" / "mobile_perf.db"
+    PerfStore(db).close()
+
+    exit_code = cli.main(["report", "run-none", "--runs-dir", str(tmp_path / "runs"),
+                          "--db", str(db)])
+
+    assert exit_code == 1
+    assert "run-none" in capsys.readouterr().err
+
+
+def test_trend_command_prints_trend_json(tmp_path, capsys):
+    trend_payload = {"pkg": "tv.danmaku.bili", "metric": "mem_pss_mb", "runs": []}
+    captured = {}
+
+    class TrendStubKit(StubKit):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captured["db_path"] = kwargs.get("db_path")
+
+        def trend(self, pkg, metric, profile=None):
+            captured["args"] = (pkg, metric, profile)
+            return trend_payload
+
+    exit_code = cli.main(
+        [
+            "trend",
+            "tv.danmaku.bili",
+            "--metric",
+            "mem_pss_mb",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+            "--db",
+            str(tmp_path / "d.db"),
+        ],
+        kit_factory=lambda **kwargs: TrendStubKit(**kwargs),
+    )
+
+    assert exit_code == 0
+    assert captured["args"] == ("tv.danmaku.bili", "mem_pss_mb", None)
+    assert captured["db_path"] == str(tmp_path / "d.db")
+    assert json.loads(capsys.readouterr().out) == trend_payload
+
+
+def test_trend_command_passes_explicit_profile_and_error_returns_nonzero(tmp_path, capsys):
+    class ProfileKit(StubKit):
+        def trend(self, pkg, metric, profile=None):
+            raise cli.ProfileMismatchError("跨档案拒绝")
+
+    exit_code = cli.main(
+        [
+            "trend",
+            "tv.danmaku.bili",
+            "--metric",
+            "mem_pss_mb",
+            "--profile",
+            "PICO4-Android12",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: ProfileKit(**kwargs),
+    )
+
+    assert exit_code == 1
+    assert "跨档案拒绝" in capsys.readouterr().err
 
 
 class DoctorStubKit:
