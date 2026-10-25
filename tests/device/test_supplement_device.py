@@ -37,6 +37,14 @@ def device_available():
     return DEVICE_SERIAL
 
 
+def _device_charging(adb_path: str, serial: str) -> bool | None:
+    """从 dumpsys battery 判真机是否充电中（A1 温度补采跳过的前提）。"""
+    from mobile_perf.keeper import parse_battery_charging
+
+    run = _adb_runner([adb_path, "-s", serial, "shell", "dumpsys", "battery"], 10.0)
+    return parse_battery_charging(run.stdout or "")
+
+
 def _device_epoch(adb_path: str) -> float:
     run = _adb_runner([adb_path, "-s", DEVICE_SERIAL, "shell", "date", "+%s"], 10.0)
     epoch = parse_device_epoch(run.stdout or "")
@@ -92,17 +100,26 @@ def test_supplement_ingestion_full_loop_on_real_device(device_available, tmp_pat
     )
 
     rows = {row["metric_key"]: row for row in store.fetch_metrics(report["runId"])}
-    assert rows["temp_battery_c"]["source"] == "pc_supplement"
-    assert rows["temp_battery_c"]["sample_count"] >= 3
     assert rows["cpu_global_pct"]["source"] == "solo_pi"  # SoloPi 聚合并存
 
+    # A1 充电降级：充电时温度补采按巡检结论跳过（不硬造数据），未充电才产出
+    charging = _device_charging(adb_path, device_available)
+    if charging:
+        assert "temp_battery_c" not in rows
+        assert kit.last_readiness.degraded_items == ("Battery", "Temperature")
+    else:
+        assert rows["temp_battery_c"]["source"] == "pc_supplement"
+        assert rows["temp_battery_c"]["sample_count"] >= 3
+
     # 三源同图数据基础：series 带 source，补采与 SoloPi 曲线同时间轴范围
-    assert report["series"]["temp_battery_c"]["source"] == "pc_supplement"
-    temp_x = [p[0] for p in report["series"]["temp_battery_c"]["points"]]
     cpu_x = [p[0] for p in report["series"]["cpu_global_pct"]["points"]]
-    assert temp_x and cpu_x
-    assert max(temp_x) <= duration_s + 2.0
+    assert cpu_x
     assert max(cpu_x) <= duration_s + 5.0  # 两条曲线落在同一条时间轴上
+    if not charging:
+        assert report["series"]["temp_battery_c"]["source"] == "pc_supplement"
+        temp_x = [p[0] for p in report["series"]["temp_battery_c"]["points"]]
+        assert temp_x
+        assert max(temp_x) <= duration_s + 2.0
 
     meta = json.loads(
         (tmp_path / "runs" / report["runId"] / "meta.json").read_text(encoding="utf-8")
