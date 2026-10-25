@@ -72,6 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--device-profile",
         help="设备档案（机型+OS 大版本；趋势与基线的可比性单位，默认不记录）",
     )
+    collect_parser.add_argument(
+        "--frame-poll",
+        action="store_true",
+        help=(
+            "逐帧采集（ticket 15）：采集窗口内轮询 dumpsys gfxinfo framestats，"
+            "产出帧耗时 P50/P90/P99 与超时帧占比。与卡顿分级口径不同、不可互算"
+        ),
+    )
+    collect_parser.add_argument(
+        "--frame-interval",
+        type=float,
+        default=None,
+        help="逐帧轮询间隔秒（默认 2.0；dumpsys 不触发渲染，间隔过小无收益）",
+    )
 
     report_parser = sub.add_parser(
         "report", help="从 runs/ 与 store 组装 run 的 HTML+JSON 双产物"
@@ -210,6 +224,12 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
             runs_dir=args.runs_dir,
             start_mode=args.start_mode,
             jank_thresholds_ms=jank_thresholds,
+            frame_poll=args.frame_poll,
+            **(
+                {"frame_interval_s": args.frame_interval}
+                if args.frame_interval is not None
+                else {}
+            ),
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)

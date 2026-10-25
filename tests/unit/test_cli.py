@@ -26,7 +26,8 @@ class StubKit:
         self.calls = []
 
     def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None,
-                    start_mode=None, jank_thresholds_ms=None):
+                    start_mode=None, jank_thresholds_ms=None, frame_poll=False,
+                    frame_interval_s=None):
         self.calls.append(
             {
                 "target": target,
@@ -36,6 +37,8 @@ class StubKit:
                 "runs_dir": runs_dir,
                 "start_mode": start_mode,
                 "jank_thresholds_ms": jank_thresholds_ms,
+                "frame_poll": frame_poll,
+                "frame_interval_s": frame_interval_s,
             }
         )
         return {"runId": host_run_id or "run-stub", "target": target}

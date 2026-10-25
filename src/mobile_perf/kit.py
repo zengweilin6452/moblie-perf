@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import collector, solo
+from . import frameinfo as frameinfo_module
 from . import jank as jank_module
 from . import leak as leak_module
 from . import metrics as metrics_module
@@ -152,6 +153,8 @@ class CollectScope:
         supplement_interval_s: float,
         start_mode: str | None = None,
         jank_thresholds_ms: dict[str, float] | None = None,
+        frame_poll: bool = False,
+        frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
     ):
         self._kit = kit
         self.target = target
@@ -159,6 +162,8 @@ class CollectScope:
         self._host_run_id = host_run_id
         self._supplement = supplement
         self._supplement_interval_s = supplement_interval_s
+        self._frame_poll = frame_poll
+        self._frame_interval_s = frame_interval_s
         self._start_mode = start_mode
         self._jank_thresholds_ms = (
             jank_module.validate_thresholds(jank_thresholds_ms)
@@ -171,6 +176,7 @@ class CollectScope:
         self._artifacts_dir = self._run_dir / "artifacts"
         self._session: CollectSession | None = None
         self._poller: Any | None = None
+        self._frame_poller: Any | None = None
         self._watcher: Any | None = None
         self._watch_warnings: list[dict[str, Any]] = []
         self.foreground_before: dict[str, Any] | None = None
@@ -210,6 +216,11 @@ class CollectScope:
         kit._supplement_offset = (0.0, "assumed")
         self._poller = kit._start_supplement(
             self._supplement, self._supplement_interval_s
+        )
+        # 逐帧采集（ticket 15）：reset 清零窗口后按间隔增量读 framestats，
+        # 独立线程、不持 gate 设备权；失败如实降级为事件，不阻断采集闭环
+        self._frame_poller = kit._start_frame_poll(
+            self._frame_poll, self._frame_interval_s, self.target
         )
         self._watcher = kit._start_crash_watch(self.target, self._watch_warnings)
         kit._guard_foreground(self, phase="after_start")
@@ -254,10 +265,13 @@ class CollectScope:
         self._finalized = True
         kit = self._kit
         supplement_result = None
-        # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 采集窗口对齐，
+        frame_result = None
+        # 先停补采/逐帧轮询再停端侧采集：两者窗口与 SoloPi 采集窗口对齐，
         # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
         if self._poller is not None:
             supplement_result = self._poller.stop()
+        if self._frame_poller is not None:
+            frame_result = self._frame_poller.stop()
         try:
             record = self._session.stop(str(self._artifacts_dir))
         finally:
@@ -328,7 +342,33 @@ class CollectScope:
         jank_aggregates = jank_module.aggregate_from_artifacts(
             self._artifacts_dir, self._jank_thresholds_ms
         )
-        merged_aggregates = aggregates + supplement_aggregates + jank_aggregates
+        # 逐帧口径（ticket 15）：framestats 的逐帧耗时统计；无帧（后台/零渲染）
+        # 时为空，不硬造 0 值，如实降级为事件
+        frame_aggregates: list[dict[str, Any]] = []
+        frame_meta: dict[str, Any] | None = None
+        if frame_result is not None:
+            frame_meta = {
+                "enabled": True,
+                "intervalS": self._frame_interval_s,
+                "rounds": frame_result.rounds,
+                "errors": frame_result.errors,
+                "resetOk": frame_result.reset_ok,
+                "frameCount": len(frame_result.samples),
+            }
+            stats = frameinfo_module.frame_stats(frame_result.samples)
+            if stats:
+                frame_meta["refreshHz"] = stats["refreshHz"]
+                frame_meta["jankMultiplier"] = frameinfo_module.JANK_MULTIPLIER
+                frame_meta["jankCount"] = stats["jankCount"]
+                frame_aggregates = frameinfo_module.aggregate_from_samples(
+                    frame_result.samples
+                )
+                frameinfo_module.write_frames_csv(
+                    self._artifacts_dir / "frames_gfxinfo.csv", frame_result.samples
+                )
+        merged_aggregates = (
+            aggregates + supplement_aggregates + jank_aggregates + frame_aggregates
+        )
         # 启动编排结论（ticket 12）：ms 为单样本指标（聚合字段填单值），
         # 双路对照与失败明细随事件/meta 如实入库
         startup_result = self.startup
@@ -391,6 +431,7 @@ class CollectScope:
             "status": "stopped",
             "integrity": integrity,
             "supplement": supplement_info,
+            "frames": frame_meta,
             "startup": startup_meta,
             "jank": (
                 {"thresholdsMs": dict(self._jank_thresholds_ms)}
@@ -413,6 +454,7 @@ class CollectScope:
             # events 先置空，事件入库后在落盘前回填（见下方）
             events=[],
             jank_thresholds_ms=self._jank_thresholds_ms,
+            frames=frame_meta,
         )
 
         store = kit.store
@@ -443,6 +485,24 @@ class CollectScope:
                     "reason": degraded["reason"],
                     "rounds": supplement_info.get("rounds"),
                     "errors": supplement_info.get("errors"),
+                },
+            )
+        # 逐帧采集降级（ticket 15）：零帧/全轮失败时如实记事件，不产出 0 值指标
+        if frame_meta is not None and not frame_aggregates:
+            if frame_result.errors and frame_result.errors == frame_result.rounds:
+                reason = "adb_command_failed"
+            elif not frame_result.samples:
+                reason = "no_frames_rendered"
+            else:
+                reason = "no_completed_frames"
+            store.record_event(
+                self._run_id,
+                kind="frames_degraded",
+                detail={
+                    "reason": reason,
+                    "rounds": frame_result.rounds,
+                    "errors": frame_result.errors,
+                    "resetOk": frame_result.reset_ok,
                 },
             )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
@@ -924,6 +984,26 @@ class PerfKit:
             return None
         return time.time() - device_epoch if device_epoch is not None else None
 
+    def _start_frame_poll(
+        self, enabled: bool, interval_s: float, target: str
+    ) -> frameinfo_module.FramePoller | None:
+        """构造并启动逐帧轮询器（紧随 session.start，窗口与采集窗口对齐）。
+
+        与补采轮询同构：独立线程、单次 adb 短事务、不持 gate 设备权。
+        reset 失败只记录（窗口起点不可信），轮询照常，结论随 meta 如实标注。
+        """
+        if not enabled:
+            return None
+        poller = frameinfo_module.FramePoller(
+            adb_path=str(self.adb_path),
+            serial=self.serial,
+            target=target,
+            interval_s=interval_s,
+            call_device=self._channel,
+        )
+        poller.start()
+        return poller
+
     def _start_supplement(
         self, enabled: bool, interval_s: float
     ) -> supplement_module.SupplementPoller | None:
@@ -1020,6 +1100,8 @@ class PerfKit:
         supplement_interval_s: Any = _UNSET,
         start_mode: Any = _UNSET,
         jank_thresholds_ms: dict[str, float] | None = None,
+        frame_poll: bool = False,
+        frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
@@ -1073,6 +1155,8 @@ class PerfKit:
             supplement_interval_s=supplement_interval_s,
             start_mode=start_mode,
             jank_thresholds_ms=jank_thresholds_ms,
+            frame_poll=frame_poll,
+            frame_interval_s=frame_interval_s,
         )
 
     def run_collect(
@@ -1087,6 +1171,8 @@ class PerfKit:
         supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
         start_mode: str | None = None,
         jank_thresholds_ms: dict[str, float] | None = None,
+        frame_poll: bool = False,
+        frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
     ) -> dict[str, Any]:
         """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
@@ -1100,6 +1186,8 @@ class PerfKit:
         温度/GPU（不持 gate 设备权），stop 后合并入库（source=pc_supplement）
         并进报告 series；充电降级（巡检 degraded_items 含 Temperature）时
         温度补采跳过。
+        frame_poll=True（ticket 15）时另起逐帧轮询器（gfxinfo framestats），
+        产出逐帧 P50/P90/P99 与超时帧占比；零帧/命令失败如实降级为事件。
         """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
@@ -1113,6 +1201,8 @@ class PerfKit:
             supplement_interval_s=supplement_interval_s,
             start_mode=start_mode,
             jank_thresholds_ms=jank_thresholds_ms,
+            frame_poll=frame_poll,
+            frame_interval_s=frame_interval_s,
         ) as scope:
             self._sleep(duration_s)
         # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口

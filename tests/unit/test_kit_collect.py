@@ -8,7 +8,12 @@ finalize 停止采集并走完整归档/入库/报告链路——pytest 钩子�
 from pathlib import Path
 
 import pytest
-from tests.unit.test_kit import FakeHarnessBackend, fake_adb, make_kit
+from tests.unit.test_kit import (
+    FakeHarnessBackend,
+    fake_adb,
+    healthy_keeper_device_call,
+    make_kit,
+)
 
 
 def _counting_kit(tmp_path, backend=None):
@@ -333,3 +338,136 @@ def test_collect_accepts_custom_jank_thresholds(tmp_path):
     assert summary["app_jank_heavy_count"]["max"] == 0.0
     assert summary["app_jank_severe_count"]["max"] == 1.0
     assert report["jank"]["thresholdsMs"] == {"light": 100.0, "heavy": 500.0, "severe": 800.0}
+
+
+# ---------- 逐帧采集（ticket 15）：gfxinfo framestats 旁路 ----------
+
+
+def _frames_device_call(framestats_text, reset_ok=True):
+    """设备替身：巡检答案照旧，gfxinfo 相关命令返回预置内容。"""
+    from types import SimpleNamespace
+
+    base = healthy_keeper_device_call()
+
+    def call(args, timeout_s=15.0):
+        if "gfxinfo" in args:
+            if args[-1] == "reset":
+                return SimpleNamespace(
+                    returncode=0 if reset_ok else 1, stdout="", stderr=""
+                )
+            return SimpleNamespace(returncode=0, stdout=framestats_text, stderr="")
+        return base(args, timeout_s)
+
+    return call
+
+
+def _framestats_payload(durations_ms, interval_ms=16.67):
+    """构造 framestats 输出：按给定帧耗时生成 intended/completed 纳秒时间戳。"""
+    header = (
+        "Flags,FrameTimelineVsyncId,IntendedVsync,Vsync,InputEventId,HandleInputStart,"
+        "AnimationStart,PerformTraversalsStart,DrawStart,FrameDeadline,FrameInterval,"
+        "FrameStartTime,SyncQueued,SyncStart,IssueDrawCommandsStart,SwapBuffers,"
+        "FrameCompleted,DequeueBufferDuration,QueueBufferDuration,GpuCompleted,"
+        "SwapBuffersCompleted,DisplayPresentTime,CommandSubmissionCompleted,"
+    )
+    interval_ns = int(interval_ms * 1_000_000)
+    rows = []
+    for index, duration in enumerate(durations_ms):
+        intended = 1_000_000_000 + index * interval_ns
+        completed = intended + int(duration * 1_000_000)
+        rows.append(
+            f"0,{index + 1},{intended},{intended},0,0,0,0,0,0,{interval_ns},0,"
+            f"0,0,0,0,{completed},0,0,0,0,0,0,"
+        )
+    return "\n".join(["---PROFILEDATA---", header, *rows, "---PROFILEDATA---"])
+
+
+def test_collect_with_frame_poll_ingests_per_frame_metrics(tmp_path):
+    """frame_poll=True 时产出 5 个逐帧 key，口径与帧样本一致。"""
+    payload = _framestats_payload([8.0, 8.0, 40.0, 100.0])
+    kit = make_kit(
+        tmp_path, FakeHarnessBackend(), device_call=_frames_device_call(payload)
+    )
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-frames-1",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+        frame_poll=True,
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["app_frame_count"]["median"] == 4.0
+    assert summary["app_frame_p50_ms"]["median"] == pytest.approx(24.0)  # (8+8+40+100)/4 中位
+    assert summary["app_frame_p99_ms"]["unit"] == "ms"
+    # 40ms 与 100ms 超过 16.67×1.5=25ms；两帧超时 → 50%
+    assert summary["app_frame_jank_ratio_pct"]["median"] == pytest.approx(50.0)
+    assert report["frames"]["granularity"] == "per_frame"
+    assert report["frames"]["source"] == "gfxinfo_framestats"
+    assert report["frames"]["frameCount"] == 4
+    assert (tmp_path / "runs" / "run-frames-1" / "artifacts" / "frames_gfxinfo.csv").is_file()
+
+
+def test_collect_without_frame_poll_has_no_frame_keys(tmp_path):
+    """默认不开逐帧：不产出 app_frame_* key，报告也没有 frames 段。"""
+    kit = make_kit(tmp_path, FakeHarnessBackend())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-frames-2",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+    )
+
+    assert not [key for key in report["metricsSummary"] if key.startswith("app_frame_")]
+    assert "frames" not in report
+
+
+def test_collect_frame_poll_zero_frames_degrades_without_fake_values(tmp_path):
+    """零帧（后台/无渲染）时如实降级：不产出 0 值指标，落 frames_degraded 事件。"""
+    kit = make_kit(
+        tmp_path, FakeHarnessBackend(), device_call=_frames_device_call("")
+    )
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-frames-3",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+        frame_poll=True,
+    )
+
+    assert not [key for key in report["metricsSummary"] if key.startswith("app_frame_")]
+    assert report["frames"]["frameCount"] == 0
+    events = [event for event in report["events"] if event["kind"] == "frames_degraded"]
+    assert events and events[0]["detail"]["reason"] == "no_frames_rendered"
+
+
+def test_collect_frame_poll_reset_failure_is_recorded(tmp_path):
+    """reset 失败不阻断采集，但 meta 如实标注 resetOk=False（窗口起点不可信）。"""
+    payload = _framestats_payload([8.0, 8.0])
+    kit = make_kit(
+        tmp_path,
+        FakeHarnessBackend(),
+        device_call=_frames_device_call(payload, reset_ok=False),
+    )
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-frames-4",
+        runs_dir=tmp_path / "runs",
+        supplement=False,
+        frame_poll=True,
+    )
+
+    assert report["frames"]["resetOk"] is False
+    assert report["metricsSummary"]["app_frame_count"]["median"] == 2.0

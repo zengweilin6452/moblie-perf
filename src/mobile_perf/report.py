@@ -148,6 +148,7 @@ def build_report(
     series: dict[str, Any] | None = None,
     events: list[dict[str, Any]] | None = None,
     jank_thresholds_ms: dict[str, float] | None = None,
+    frames: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典（JSON 与 HTML 共用）。
 
@@ -183,6 +184,13 @@ def build_report(
             "thresholdsMs": jank_module.validate_thresholds(
                 jank_thresholds_ms or jank_module.DEFAULT_THRESHOLDS_MS
             ),
+        }
+    # 逐帧口径（ticket 15）：与上面窗口级口径并存，粒度不同、不可互算
+    if frames is not None:
+        report["frames"] = {
+            **frames,
+            "source": "gfxinfo_framestats",
+            "granularity": "per_frame",
         }
     return report
 
@@ -306,6 +314,8 @@ def assemble_run_report(
         events=store.fetch_events(run_id),
         # 自定义分级阈值随 meta.json 持久化，重组报告时沿用（口径不漂移）
         jank_thresholds_ms=(meta.get("jank") or {}).get("thresholdsMs"),
+        # 逐帧采集元信息同样随 meta.json 持久化，重组报告时口径一致
+        frames=meta.get("frames"),
     )
 
 
@@ -341,6 +351,7 @@ th {{ background: #f2f4f8; }}
 <table class="meta">{meta_rows}</table>
 {startup_markup}
 {jank_markup}
+{frame_markup}
 <h2>聚合统计</h2>
 <table>
 <tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
@@ -431,6 +442,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         meta_rows=meta_rows,
         startup_markup=_startup_markup(report),
         jank_markup=_jank_markup(report),
+        frame_markup=_frame_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
@@ -599,6 +611,50 @@ def _jank_markup(report: dict[str, Any]) -> str:
         "<p>口径 / Method：SoloPi 无逐帧延迟分布，按每个采样窗口的"
         "「最长延迟时间」是否超过阈值计数（分桶互斥，只计最高档）。</p>"
     ).format(rows="\n".join(rows))
+
+
+def _frame_markup(report: dict[str, Any]) -> str:
+    """逐帧小节（ticket 15）：P50/P90/P99 + 超时帧占比 + 与窗口级口径的差异说明。
+
+    与「卡顿分级」并列呈现，并明确写出两种口径粒度不同、不可互算。
+    """
+    summary = report.get("metricsSummary") or {}
+    frames = report.get("frames") or {}
+    rows_spec = (
+        ("app_frame_p50_ms", "帧耗时 P50 / Frame P50"),
+        ("app_frame_p90_ms", "帧耗时 P90 / Frame P90"),
+        ("app_frame_p99_ms", "帧耗时 P99 / Frame P99"),
+        ("app_frame_jank_ratio_pct", "超时帧占比 / Janky frame ratio"),
+        ("app_frame_count", "采样帧数 / Sampled frames"),
+    )
+    rows = [
+        "<tr><td>{label}</td><td>{value}</td><td>{unit}</td></tr>".format(
+            label=html_escape(label),
+            value=_fmt((summary.get(key) or {}).get("median")),
+            unit=html_escape(str((summary.get(key) or {}).get("unit") or "")),
+        )
+        for key, label in rows_spec
+        if key in summary
+    ]
+    if not rows:
+        return ""
+    refresh = frames.get("refreshHz")
+    multiplier = frames.get("jankMultiplier")
+    detail = []
+    if refresh:
+        detail.append(f"刷新率 / Refresh ≈ {_fmt(refresh)} Hz")
+    if multiplier:
+        detail.append(f"超时判据 / Jank criterion：帧耗时 > 刷新周期 × {_fmt(multiplier)}")
+    detail_text = ("；".join(detail) + "。") if detail else ""
+    return (
+        "<h2>逐帧卡顿 / Per-frame jank</h2>"
+        '<table class="frame-stats"><tr><th>指标 / Metric</th><th>值 / Value</th>'
+        "<th>单位 / Unit</th></tr>{rows}</table>"
+        "<p>数据源 / Source：<code>dumpsys gfxinfo framestats</code>（逐帧，"
+        "FrameCompleted − IntendedVsync）。{detail}</p>"
+        "<p>⚠️ 与上方「卡顿分级」口径不同：此处按<strong>单帧</strong>耗时统计，"
+        "上方按<strong>采样窗口</strong>的最长延迟分桶，两者粒度不同、不可互相换算。</p>"
+    ).format(rows="\n".join(rows), detail=html_escape(detail_text))
 
 
 def _jank_threshold_line_script(report: dict[str, Any]) -> str:

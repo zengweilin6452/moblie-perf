@@ -149,6 +149,29 @@ METRICS: dict[str, MetricSpec] = {
             "app_jank_severe_count", "次", "solo_pi",
             "严重卡顿窗口数(>700ms)", "Severe jank windows (>700ms)",
         ),
+        # 逐帧口径（ticket 15）：源自 `dumpsys gfxinfo <pkg> framestats` 的单帧
+        # 耗时（FrameCompleted − IntendedVsync），会话级单样本结论；与工单 14 的
+        # 窗口级卡顿分级粒度不同、不可互算（见 frameinfo.py 模块文档）
+        MetricSpec(
+            "app_frame_p50_ms", "ms", "pc_supplement",
+            "帧耗时P50", "Frame duration P50",
+        ),
+        MetricSpec(
+            "app_frame_p90_ms", "ms", "pc_supplement",
+            "帧耗时P90", "Frame duration P90",
+        ),
+        MetricSpec(
+            "app_frame_p99_ms", "ms", "pc_supplement",
+            "帧耗时P99", "Frame duration P99",
+        ),
+        MetricSpec(
+            "app_frame_jank_ratio_pct", "%", "pc_supplement",
+            "超时帧占比", "Janky frame ratio",
+        ),
+        MetricSpec(
+            "app_frame_count", "帧", "pc_supplement",
+            "采样帧数", "Sampled frame count",
+        ),
         # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
         # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
         MetricSpec(

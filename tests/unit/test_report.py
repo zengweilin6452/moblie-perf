@@ -442,3 +442,66 @@ def test_write_html_renders_startup_error_when_no_ms(tmp_path):
 
     assert "启动时间 / Startup" in html
     assert "does not exist" in html
+
+
+# ---------- 逐帧小节（ticket 15） ----------
+
+
+def _frame_summary():
+    return {
+        "app_frame_p50_ms": {"unit": "ms", "source": "pc_supplement", "median": 8.0},
+        "app_frame_p90_ms": {"unit": "ms", "source": "pc_supplement", "median": 12.0},
+        "app_frame_p99_ms": {"unit": "ms", "source": "pc_supplement", "median": 48.0},
+        "app_frame_jank_ratio_pct": {
+            "unit": "%",
+            "source": "pc_supplement",
+            "median": 6.44,
+        },
+        "app_frame_count": {"unit": "帧", "source": "pc_supplement", "median": 3150.0},
+    }
+
+
+def test_build_report_records_frames_block_with_granularity():
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        metrics_summary=_frame_summary(),
+        frames={"enabled": True, "frameCount": 3150, "refreshHz": 60.0, "jankMultiplier": 1.5},
+    )
+
+    assert built["frames"]["granularity"] == "per_frame"
+    assert built["frames"]["source"] == "gfxinfo_framestats"
+    assert built["frames"]["refreshHz"] == 60.0
+
+
+def test_build_report_without_frames_omits_block():
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    assert "frames" not in built
+
+
+def test_write_html_renders_frame_section_with_scope_warning(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        metrics_summary=_frame_summary(),
+        frames={"enabled": True, "frameCount": 3150, "refreshHz": 60.0, "jankMultiplier": 1.5},
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "逐帧卡顿" in html
+    assert "Per-frame jank" in html
+    # 必须显式标注两种口径不同、不可互算
+    assert "不可互相换算" in html
+    assert "dumpsys gfxinfo framestats" in html
+
+
+def test_write_html_omits_frame_section_without_frames(tmp_path):
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "逐帧卡顿" not in html
