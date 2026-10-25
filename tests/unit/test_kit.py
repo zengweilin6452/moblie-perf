@@ -57,6 +57,16 @@ def fake_adb(tmp_path):
     return str(adb)
 
 
+class NoopWatcher:
+    """logwatch 替身：不产出事件（完整性测试与监听无关，隔离默认行为）。"""
+
+    def start(self):
+        pass
+
+    def stop(self, timeout_s=5.0):
+        return []
+
+
 def test_run_collect_end_to_end_lands_artifacts_meta_report(tmp_path):
     backend = FakeHarnessBackend()
     kit = make_kit(tmp_path, backend)
@@ -263,7 +273,10 @@ def test_run_collect_keeps_device_dir_and_alarms_on_row_mismatch(tmp_path):
     backend = SoloPiCsvBackend()
     adb = FakeDeviceAdb(overrides={"delta": 5})  # 设备端比本地多 5 行
     store = PerfStore(tmp_path / "data" / "mobile_perf.db")
-    kit = make_solopi_kit(tmp_path, backend, adb_runner=adb, store=store)
+    kit = make_solopi_kit(
+        tmp_path, backend, adb_runner=adb, store=store,
+        logwatch_factory=lambda **kw: NoopWatcher(),
+    )
 
     report = kit.run_collect(
         target="tv.danmaku.bili",
@@ -289,7 +302,9 @@ def test_run_collect_keeps_device_dir_and_alarms_on_row_mismatch(tmp_path):
 def test_run_collect_skips_device_probe_without_remote_path(tmp_path):
     backend = FakeHarnessBackend()  # 旧载荷：无 outputPath
     store = PerfStore(tmp_path / "data" / "mobile_perf.db")
-    kit = make_solopi_kit(tmp_path, backend, store=store)
+    kit = make_solopi_kit(
+        tmp_path, backend, store=store, logwatch_factory=lambda **kw: NoopWatcher()
+    )
 
     report = kit.run_collect(
         target="tv.danmaku.bili",

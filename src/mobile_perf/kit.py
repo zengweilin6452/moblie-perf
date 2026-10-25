@@ -98,6 +98,7 @@ class PerfKit:
         device_call: Callable[..., Any] | None = None,
         doctor_fn: Callable[[], Any] | None = None,
         dialog_probe: Callable[[], Any] | None = None,
+        logwatch_factory: Callable[..., Any] | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -116,6 +117,7 @@ class PerfKit:
         self._device_call = device_call
         self._doctor_fn = doctor_fn
         self._dialog_probe = dialog_probe
+        self._logwatch_factory = logwatch_factory
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
 
@@ -199,11 +201,19 @@ class PerfKit:
             clock=self._clock,
         )
         session.start()
+        watcher: Any | None = None
+        watch_warnings: list[dict[str, Any]] = []
+        watch_events: list[dict[str, Any]] = []
         try:
+            watcher = self._start_crash_watch(target, watch_warnings)
             self._sleep(duration_s)
         finally:
-            # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
-            record = session.stop(str(artifacts_dir))
+            try:
+                # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
+                record = session.stop(str(artifacts_dir))
+            finally:
+                # 监听是旁路进程：采集停止后立即回收，不悬挂
+                watch_events = self._stop_crash_watch(watcher)
 
         artifact_files = collector.validate_artifacts(artifacts_dir)
 
@@ -277,7 +287,6 @@ class PerfKit:
             metrics_summary=metrics_summary,
             integrity=integrity,
         )
-        report_module.write_report(run_dir, report_data)
 
         store = self._store or PerfStore(self._repo_root / "data" / "mobile_perf.db")
         store.record_session(
@@ -297,6 +306,13 @@ class PerfKit:
         )
         store.record_metrics(run_id, aggregates)
         store.record_run_artifacts(run_id, [str(artifacts_dir), str(run_dir)])
+        # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
+        for event in watch_events:
+            store.record_event(
+                run_id, kind=event["kind"], detail=event["detail"], ts=event["ts"]
+            )
+        for warning in watch_warnings:
+            store.record_event(run_id, kind="logwatch_warning", detail=dict(warning))
         if integrity_report is not None and not integrity_report.ok:
             reason = (
                 "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
@@ -329,4 +345,41 @@ class PerfKit:
             )
         except Exception:  # noqa: BLE001 - 清理失败只告警
             logger.exception("本地保留策略清理失败")
+
+        # 报告最后落盘：events 已入库，随 run 数据返回供报告时间轴渲染（票 04）
+        report_data["events"] = store.fetch_events(run_id)
+        report_module.write_report(run_dir, report_data)
         return report_data
+
+    def _start_crash_watch(self, target: str, warnings: list[dict[str, Any]]) -> Any | None:
+        """采集期间启动 crash/ANR 旁路监听；启动失败只告警，不阻断采集闭环。"""
+        offset = self.last_readiness.clock_offset_s if self.last_readiness else None
+        factory = self._logwatch_factory
+        if factory is None:
+            from .logwatch import LogWatch
+
+            def factory(*, packages: list[str], clock_offset_s: float | None) -> Any:
+                return LogWatch(
+                    adb_path=str(self.adb_path),
+                    serial=self.serial,
+                    packages=packages,
+                    clock_offset_s=clock_offset_s,
+                )
+
+        try:
+            watcher = factory(packages=[target], clock_offset_s=offset)
+            watcher.start()
+            return watcher
+        except Exception as exc:  # noqa: BLE001 - 监听缺失如实记录为事件
+            logger.warning("logwatch 启动失败，crash/ANR 监听缺失: %s", exc)
+            warnings.append({"reason": str(exc)})
+            return None
+
+    def _stop_crash_watch(self, watcher: Any | None) -> list[dict[str, Any]]:
+        if watcher is None:
+            return []
+        try:
+            return list(watcher.stop())
+        except Exception:  # noqa: BLE001 - 停止失败不阻断采集闭环
+            logger.exception("logwatch 停止异常")
+            return []
