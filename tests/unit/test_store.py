@@ -272,3 +272,35 @@ def test_baseline_created_at_defaults_to_local_iso_now(store):
     (row,) = store.fetch_baseline("bili-home-v3")
 
     assert row["created_at"]  # 写入时自动补时间戳
+
+
+def test_concurrent_store_construction_on_fresh_db_is_safe(tmp_path):
+    """xdist 场景：多进程/线程同时首连同一新库，journal_mode=wal 切换竞争不炸。"""
+    import threading
+
+    db_path = tmp_path / "shared" / "mobile_perf.db"
+    barrier = threading.Barrier(8)
+    errors: list[Exception] = []
+    stores: list[PerfStore] = []
+    lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        try:
+            s = PerfStore(db_path)
+            s.close()  # 连接归创建线程所有，本线程内关闭
+            with lock:
+                stores.append(s)
+        except Exception as exc:  # noqa: BLE001 - 收集后统一断言
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert len(stores) == 8
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

@@ -79,7 +79,7 @@ def _collected_sections(recorder: SectionRecorder) -> dict[str, str]:
 
 def test_perf_fixture_requires_opt_in(pytester):
     pytester.makepyfile("def test_inner(perf):\n    pass\n")
-    result = pytester.runpytest("-p", "mobile_perf.pytest_plugin")
+    result = pytester.runpytest()
     result.assert_outcomes(errors=1)
     result.stdout.fnmatch_lines(["*--mobile-perf*"])
 
@@ -88,9 +88,7 @@ def test_perf_session_finalizes_and_writes_section(pytester):
     pytester.makeconftest(_INNER_CONFTEST)
     pytester.makepyfile(_INNER_TEST)
     recorder = SectionRecorder()
-    result = pytester.runpytest(
-        "-p", "mobile_perf.pytest_plugin", plugins=[recorder]
-    )
+    result = pytester.runpytest(plugins=[recorder])
     result.assert_outcomes(passed=1)
 
     sections = _collected_sections(recorder)
@@ -122,7 +120,7 @@ def test_perf_session_judges_against_saved_baseline(pytester, tmp_path):
             assert perf.results[0].verdict.checks[0]["metricKey"] == "mem_pss_mb"
         """
     )
-    result = pytester.runpytest("-p", "mobile_perf.pytest_plugin")
+    result = pytester.runpytest()
     result.assert_outcomes(passed=1)
 
 
@@ -150,9 +148,7 @@ def test_perf_session_judged_failure_lands_in_section(pytester):
         """
     )
     recorder = SectionRecorder()
-    result = pytester.runpytest(
-        "-p", "mobile_perf.pytest_plugin", plugins=[recorder]
-    )
+    result = pytester.runpytest(plugins=[recorder])
     result.assert_outcomes(passed=1)
     sections = _collected_sections(recorder)
     assert "verdict: failed" in sections["mobile-perf"]

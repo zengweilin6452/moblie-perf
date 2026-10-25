@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 _BUSY_TIMEOUT_MS = 5000
+# journal_mode 切换需要短暂排他锁且不吃 busy_timeout（xdist 多进程同启实测）；
+# 超时前轮询重试，超时后确认模式已是 wal 亦可接受
+_WAL_SWITCH_TIMEOUT_S = 5.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -84,10 +88,27 @@ class PerfStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path)
         self._conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
-        self._conn.execute("PRAGMA journal_mode = wal")
+        self._enable_wal()
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+
+    def _enable_wal(self) -> None:
+        """切 WAL：并发首连时该 PRAGMA 需要短暂排他锁且不吃 busy_timeout，
+        轮询重试至超时；超时后若模式已是 wal（他人切换完成）同样视为成功。"""
+        deadline = time.monotonic() + _WAL_SWITCH_TIMEOUT_S
+        while True:
+            try:
+                self._conn.execute("PRAGMA journal_mode = wal")
+                return
+            except sqlite3.OperationalError:
+                if time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
+                mode = self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(mode).lower() == "wal":
+                    return
+                raise
 
     def record_session(self, session: dict[str, Any]) -> None:
         if not session.get("run_id"):
