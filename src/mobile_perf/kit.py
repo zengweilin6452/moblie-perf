@@ -18,7 +18,13 @@ from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
 from .judge import JudgeSpec, Verdict
 from .judge import judge as _judge_report
-from .keeper import Keeper, ReadinessReport, parse_foreground_component, parse_foreground_package
+from .keeper import (
+    CheckResult,
+    Keeper,
+    ReadinessReport,
+    parse_foreground_component,
+    parse_foreground_package,
+)
 from .session import CollectSession
 from .store import PerfStore
 
@@ -411,6 +417,7 @@ class PerfKit:
         device_profile: str | None = None,
         logwatch_factory: Callable[..., Any] | None = None,
         foreground_restore: bool = True,
+        dialog_dismiss: Callable[[], dict[str, Any]] | None = None,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -433,6 +440,9 @@ class PerfKit:
         self.device_profile = device_profile
         self._logwatch_factory = logwatch_factory
         self.foreground_restore = foreground_restore
+        # 权限弹窗代点探针（A4，默认关）：dialog.make_dialog_dismiss_probe 构造，
+        # 仅宿主显式传入才挂上 ensure_ready 巡检
+        self._dialog_dismiss = dialog_dismiss
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
         # 统一设备命令通道（B3）：_shell/对时兜底/补采轮询共用一条优先级链
@@ -616,9 +626,33 @@ class PerfKit:
                         for event in events
                     ),
                 )
+        report = self._run_dialog_dismiss(report)
         self.last_readiness = report
         self._record_device_status(report)
         return report
+
+    def _run_dialog_dismiss(self, report: ReadinessReport) -> ReadinessReport:
+        """权限弹窗代点探针（A4，默认关）：显式传入 dialog_dismiss 才挂上巡检。
+
+        实际点按（或探针异常）才记 dialog_dismiss 事件供判读；失败不阻断巡检。
+        """
+        if self._dialog_dismiss is None:
+            return report
+        try:
+            verdict = self._dialog_dismiss()
+        except Exception as exc:  # noqa: BLE001 - 降级备选失败只记事件
+            logger.warning("dialog_dismiss 探针异常: %s", exc)
+            verdict = {"enabled": True, "present": None, "tapped": False, "error": str(exc)}
+        event = {
+            "kind": "dialog_dismiss",
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "detail": verdict,
+        }
+        return dataclasses.replace(
+            report,
+            checks=tuple(report.checks) + (CheckResult("dialog_dismiss", "ok", verdict),),
+            events=tuple(report.events) + (event,),
+        )
 
     def _record_device_status(self, report: ReadinessReport) -> None:
         """巡检结论落到 devices 表（§5）：needs_attention 如实入库，不粉饰。"""
