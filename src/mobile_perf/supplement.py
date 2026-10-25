@@ -8,14 +8,17 @@
 
 from __future__ import annotations
 
+import csv
 import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from . import adb as adb_module
+from . import metrics as metrics_module
 
 TEMPERATURE_RE = re.compile(r"temperature:\s*(-?\d+)", re.IGNORECASE)
 
@@ -220,3 +223,63 @@ class SupplementPoller:
                 continue
             degraded.append({"key": key, "reason": reason})
         return degraded
+
+
+# ---------- 入库前整理：样本落盘与聚合（与 collector 聚合行同形状） ----------
+
+SAMPLE_KEYS = ("temp_battery_c", "gpu_util_pct")
+
+
+def write_supplement_csv(path: str | Path, samples: list[dict[str, Any]]) -> Path:
+    """把补采样本写成 artifacts CSV：elapsed_s 列 + canonical key 列。
+
+    落盘只为可追溯与报告重建（report.py 按 canonical key 吸收）；无样本不写文件。
+    """
+    path = Path(path)
+    if not samples:
+        return path
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["elapsed_s", *SAMPLE_KEYS])
+        for sample in samples:
+            writer.writerow(
+                [str(sample["elapsed_s"])]
+                + ["" if sample.get(key) is None else sample[key] for key in SAMPLE_KEYS]
+            )
+    return path
+
+
+def _percentile(sorted_values: list[float], ratio: float) -> float:
+    """线性插值百分位（与 collector._percentile 同口径；collector 不在本票边界内）。"""
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = ratio * (len(sorted_values) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    fraction = rank - lower
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
+
+
+def aggregate_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把补采样本聚合成 store.record_metrics 可吃的行；无样本的指标不产出行。"""
+    aggregates: list[dict[str, Any]] = []
+    for key in SAMPLE_KEYS:
+        values = sorted(sample[key] for sample in samples if sample.get(key) is not None)
+        if not values:
+            continue
+        spec = metrics_module.METRICS[key]
+        count = len(values)
+        aggregates.append(
+            {
+                "metric_key": key,
+                "unit": spec.unit,
+                "source": spec.source,
+                "min": values[0],
+                "median": _percentile(values, 0.5),
+                "mean": sum(values) / count,
+                "max": values[-1],
+                "p90": _percentile(values, 0.9),
+                "sample_count": count,
+            }
+        )
+    return aggregates

@@ -207,3 +207,44 @@ class TestSupplementPoller:
         assert args[:3] == ["-s", "749622c9", "shell"]
         assert args[3:5] == ["date", "+%s"]
         assert "battery" in args and "gpu" in args
+
+
+class TestWriteSupplementCsv:
+    """补采样本落盘：canonical key 做列名，elapsed_s 做统一时间轴列。"""
+
+    def test_writes_header_and_rows_with_empty_values(self, tmp_path):
+        samples = [
+            {"elapsed_s": 0.0, "temp_battery_c": 28.0, "gpu_util_pct": None},
+            {"elapsed_s": 2.0, "temp_battery_c": 28.1, "gpu_util_pct": 40.0},
+        ]
+        path = supplement.write_supplement_csv(tmp_path / "supplement_thermal_gpu.csv", samples)
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        assert lines == [
+            "elapsed_s,temp_battery_c,gpu_util_pct",
+            "0.0,28.0,",
+            "2.0,28.1,40.0",
+        ]
+
+
+class TestAggregateSamples:
+    """补采样本聚合：与 collector 聚合行同形状；None-only 指标不产出行。"""
+
+    def test_aggregates_only_keys_with_samples(self):
+        samples = [
+            {"elapsed_s": 0.0, "temp_battery_c": 10.0, "gpu_util_pct": None},
+            {"elapsed_s": 2.0, "temp_battery_c": 20.0, "gpu_util_pct": None},
+            {"elapsed_s": 4.0, "temp_battery_c": 30.0, "gpu_util_pct": None},
+        ]
+        rows = supplement.aggregate_samples(samples)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["metric_key"] == "temp_battery_c"
+        assert row["unit"] == "°C"
+        assert row["source"] == "pc_supplement"
+        assert (row["min"], row["median"], row["mean"], row["max"], row["p90"]) == (
+            10.0, 20.0, 20.0, 30.0, 28.0
+        )
+        assert row["sample_count"] == 3
+
+    def test_empty_samples_give_no_rows(self):
+        assert supplement.aggregate_samples([]) == []
