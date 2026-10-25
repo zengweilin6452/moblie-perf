@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-02 三笔提交已合并进 mobile-perf-dev @ e841952；74 unit/contract 通过，含与真实 DeviceLease 双向互抢契约（真跨进程）。ensure_ready 属票 05 keeper，届时复用 PerfKit._borrowed；stop+pull 合并为一个短事务（Harness 侧本是一次 perf-stop --output））
 
 - [ ] moblie-auto DeviceSession 持锁期间发起 collect → GateBusyError 立即失败，不等待
 - [ ] collect 录制进行中，moblie-auto 侧能正常借到同一设备（短事务语义实测）
