@@ -1,0 +1,34 @@
+# ---- 过程文件（本地保留，不入库）----
+downloads/
+solopi-master.tar.gz
+phone_screen*.png
+
+# ---- 采集数据（工作成果，本地保留，不入库）----
+perf-output/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Node / 前端 ----
+node_modules/
+dist/
+
+# ---- Android / Gradle 构建产物 ----
+**/build/
+.gradle/
+local.properties
+**/.cxx/
+*.iml
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# ---- 日志与临时文件 ----
+*.log
+tmp/
