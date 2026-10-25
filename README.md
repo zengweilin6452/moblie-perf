@@ -31,6 +31,7 @@ mobile-perf doctor --serial <serial>                       # 巡检 + 自愈（�
 mobile-perf collect tv.danmaku.bili --items CPU,FPS,Memory --duration 180
 mobile-perf report <runId> --baseline bili-home-v3 --threshold mem_pss_mb:lt:220:fail
 mobile-perf trend tv.danmaku.bili --metric mem_pss_mb
+mobile-perf leak com.sinosoft.trainapp --profile Xiaomi-2206123SC-Android14 --slope-threshold 2.0
 ```
 
 ### 库 API

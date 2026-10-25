@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from . import collector, solo
 from . import jank as jank_module
+from . import leak as leak_module
 from . import metrics as metrics_module
 from . import report as report_module
 from . import startup as startup_module
@@ -55,6 +56,32 @@ class ProfileMismatchError(TrendError):
 
 # 趋势查询的单包 run 上限（与 store.fetch_sessions 的 LIMIT 对应）
 TREND_MAX_RUNS = 1000
+
+
+def _resolve_profile(
+    pkg: str, sessions: list[dict[str, Any]], profile: str | None
+) -> tuple[list[dict[str, Any]], bool]:
+    """跨档案口径选择（trend 与 leak_trend 共用，Q6 语义唯一来源）。
+
+    profile 未传且 run 跨多个档案 → ProfileMismatchError；显式传 profile 时
+    只保留该档案的 run，其余被排除则返回 profileMismatch=True。
+    """
+    profiles = {session.get("device_profile") for session in sessions}
+    if profile is None:
+        if len(profiles) > 1:
+            shown = ", ".join(sorted(str(item) for item in profiles))
+            raise ProfileMismatchError(
+                f"包 {pkg} 的 run 跨多个设备档案（{shown}），口径不一致；"
+                "请显式传 profile= 指定档案后重试"
+            )
+        return sessions, False
+    chosen = [session for session in sessions if session.get("device_profile") == profile]
+    if not chosen:
+        raise TrendError(
+            f"包 {pkg} 没有 device_profile={profile!r} 的 run；"
+            f"已有档案: {', '.join(sorted(str(item) for item in profiles)) or '未记录'}"
+        )
+    return chosen, profiles != {profile}
 
 
 class CollectBackend(Protocol):
@@ -787,24 +814,7 @@ class PerfKit:
         if not sessions:
             raise TrendError(f"包 {pkg} 没有已入库的 run，无法计算趋势")
 
-        profiles = {session.get("device_profile") for session in sessions}
-        profile_mismatch = False
-        if profile is None:
-            if len(profiles) > 1:
-                shown = ", ".join(sorted(str(item) for item in profiles))
-                raise ProfileMismatchError(
-                    f"包 {pkg} 的 run 跨多个设备档案（{shown}），口径不一致；"
-                    "请显式传 profile= 指定档案后重试"
-                )
-            chosen = sessions
-        else:
-            chosen = [s for s in sessions if s.get("device_profile") == profile]
-            if not chosen:
-                raise TrendError(
-                    f"包 {pkg} 没有 device_profile={profile!r} 的 run；"
-                    f"已有档案: {', '.join(sorted(str(item) for item in profiles)) or '未记录'}"
-                )
-            profile_mismatch = profiles != {profile}
+        chosen, profile_mismatch = _resolve_profile(pkg, sessions, profile)
 
         runs: list[dict[str, Any]] = []
         for session in reversed(chosen):  # started_at DESC 入库 → 反转为升序
@@ -840,6 +850,65 @@ class PerfKit:
             "profileMismatch": profile_mismatch,
             "runs": runs,
         }
+
+    def leak_trend(
+        self,
+        pkg: str,
+        profile: str | None = None,
+        *,
+        min_runs: int = leak_module.DEFAULT_MIN_RUNS,
+        slope_threshold: float | None = None,
+        level: str = "fail",
+    ) -> dict[str, Any]:
+        """内存泄漏趋势（ticket 13）：同档案历史 run 的 median 随墙钟时间回归。
+
+        返回每 run 的 median/durationS/startedAt 序列 + OLS 斜率
+        （mem_pss_slope_mb_per_day）+ 置信度标记。跨设备档案语义与 trend
+        完全一致（_resolve_profile）：默认拒绝，显式 profile 覆盖并标记
+        profileMismatch。slope_threshold 传入时附宿主阈值的三态结论
+        （verdict）；样本不足时斜率置 None 并如实给出 insufficient。
+        """
+        slope_spec = metrics_module.METRICS[leak_module.SLOPE_METRIC_KEY]
+        series = self.store.fetch_metric_series(pkg, leak_module.LEAK_METRIC_KEY)
+        if not series:
+            raise TrendError(
+                f"包 {pkg} 没有指标 {leak_module.LEAK_METRIC_KEY} 的聚合数据，"
+                "无法分析泄漏趋势"
+            )
+        sessions = self.store.fetch_sessions(target=pkg, limit=TREND_MAX_RUNS)
+        chosen, profile_mismatch = _resolve_profile(pkg, sessions, profile)
+        chosen_ids = {session["run_id"] for session in chosen}
+        series = [row for row in series if row["run_id"] in chosen_ids]
+
+        analysis = leak_module.analyze_leak_trend(
+            [
+                {
+                    "runId": row["run_id"],
+                    "startedAt": row["started_at"],
+                    "durationS": row["duration_s"],
+                    "median": row["median"],
+                }
+                for row in series
+            ],
+            min_runs=min_runs,
+        )
+        payload: dict[str, Any] = {
+            "pkg": pkg,
+            "metric": leak_module.LEAK_METRIC_KEY,
+            "slopeMetricKey": leak_module.SLOPE_METRIC_KEY,
+            "unit": slope_spec.unit,
+            "labelZh": slope_spec.label_zh,
+            "labelEn": slope_spec.label_en,
+            "profile": profile if profile is not None else chosen[0].get("device_profile"),
+            "profileMismatch": profile_mismatch,
+            **analysis.as_dict(),
+        }
+        if slope_threshold is not None:
+            verdict = leak_module.leak_verdict(
+                analysis, threshold=slope_threshold, level=level
+            )
+            payload["verdict"] = verdict.to_dict()
+        return payload
 
     def _measure_clock_offset_s(self) -> float | None:
         """无巡检结论时短事务实测 device-host 时钟偏移（对时兜底，keeper 同口径）。"""

@@ -1,7 +1,8 @@
-"""命令行：mobile-perf doctor / collect / report / trend。
+"""命令行：mobile-perf doctor / collect / report / trend / leak。
 
 collect 一条命令完成：启动采集 → duration 计时 → 停止 → pull → runs/<runId>/ 落盘。
-report 从 runs/ 与 store 组装 HTML+JSON 双产物；trend 输出跨 run 指标对比。
+report 从 runs/ 与 store 组装 HTML+JSON 双产物；trend 输出跨 run 指标对比；
+leak 输出内存泄漏趋势（median 随墙钟时间的 OLS 斜率 + 置信度 + 可选宿主阈值结论）。
 进度与错误走 stderr，最终报告 JSON 走 stdout（机器可读契约）。
 """
 
@@ -105,6 +106,31 @@ def build_parser() -> argparse.ArgumentParser:
     trend_parser.add_argument("--serial", help="设备 serial（趋势只读库，不连设备）")
     trend_parser.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
     trend_parser.add_argument("--db", help="SQLite 路径（默认 <repo>/data/mobile_perf.db）")
+
+    leak_parser = sub.add_parser(
+        "leak", help="内存泄漏趋势（同档案历史 run 的 median 斜率，跨档案默认拒绝）"
+    )
+    leak_parser.add_argument("pkg", help="被测应用包名")
+    leak_parser.add_argument(
+        "--profile", help="设备档案（跨档案 run 存在时必须显式指定）"
+    )
+    leak_parser.add_argument(
+        "--min-runs", type=int, default=None, help="回归所需 run 数下限（默认 3）"
+    )
+    leak_parser.add_argument(
+        "--slope-threshold",
+        type=float,
+        help="宿主斜率阈值（MB/day，超过即不满足）；不传则只输出斜率与置信度",
+    )
+    leak_parser.add_argument(
+        "--level",
+        choices=("fail", "warn"),
+        default="fail",
+        help="阈值不满足时的级别（默认 fail）",
+    )
+    leak_parser.add_argument("--serial", help="设备 serial（泄漏趋势只读库，不连设备）")
+    leak_parser.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
+    leak_parser.add_argument("--db", help="SQLite 路径（默认 <repo>/data/mobile_perf.db）")
 
     sub.add_parser(
         "serve",
@@ -312,6 +338,31 @@ def _run_trend(args: argparse.Namespace, kit_factory=None) -> int:
     return 0
 
 
+def _run_leak(args: argparse.Namespace, kit_factory=None) -> int:
+    adb_path = str(resolve_adb(args.adb))
+    # 只读分析（同 trend）：不强制 serial——不探测在线设备，显式传入才注入
+    kwargs: dict = {"adb_path": adb_path, "db_path": args.db}
+    if args.serial:
+        kwargs["serial"] = args.serial
+    kit = _build_kit(kit_factory, **kwargs)
+    extra: dict = {}
+    if args.min_runs is not None:
+        extra["min_runs"] = args.min_runs
+    if args.slope_threshold is not None:
+        extra["slope_threshold"] = args.slope_threshold
+        extra["level"] = args.level
+    try:
+        leak_trend = kit.leak_trend(args.pkg, profile=args.profile, **extra)
+    except ProfileMismatchError as exc:
+        print(f"[mobile-perf] leak 口径不一致: {exc}", file=sys.stderr)
+        return 1
+    except TrendError as exc:
+        print(f"[mobile-perf] leak 失败: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(leak_trend, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _run_serve(args: argparse.Namespace, kit_factory=None) -> int:
     """§6.6：serve HTTP 模式仅预留接口不实现（回环 + gate 门控，形态对齐 viewer）。"""
     print("[mobile-perf] serve 为预留接口，未实现（设计方案 §6.6）", file=sys.stderr)
@@ -328,6 +379,8 @@ def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
         return _run_report(args, kit_factory)
     if args.command == "trend":
         return _run_trend(args, kit_factory)
+    if args.command == "leak":
+        return _run_leak(args, kit_factory)
     if args.command == "serve":
         return _run_serve(args, kit_factory)
     build_parser().error(f"未知命令: {args.command}")

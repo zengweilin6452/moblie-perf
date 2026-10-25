@@ -67,6 +67,12 @@ _Avoid_: 模板版本（moblie-auto 语境）
 passed / failed / not_tested 三态判定结果，附证据引用；产生它的机制称 Judge。
 _Avoid_: doctor（设备就绪检查，另一概念）
 
+**泄漏趋势（Leak Trend）**:
+同 target_pkg + device_profile 的历史 run 中，指标 median 随墙钟时间做
+普通最小二乘回归得到的增长速率（`mem_pss_slope_mb_per_day`，MB/day），
+附样本数与置信度标记；回归方法与样本下限归组件，斜率阈值归宿主。
+_Avoid_: 内存曲线（单 run 序列，不含跨 run 回归）、内存增长（未给时间口径）
+
 ## App 侧
 
 **弹窗免重复（Dialog Suppress）**:

@@ -36,6 +36,8 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "app_jank_light_count",
         "app_jank_heavy_count",
         "app_jank_severe_count",
+        # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）
+        "mem_pss_slope_mb_per_day",
     }
 
     assert set(metrics.METRICS) == expected

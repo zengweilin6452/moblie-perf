@@ -149,6 +149,15 @@ METRICS: dict[str, MetricSpec] = {
             "app_jank_severe_count", "次", "solo_pi",
             "严重卡顿窗口数(>700ms)", "Severe jank windows (>700ms)",
         ),
+        # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
+        # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
+        MetricSpec(
+            "mem_pss_slope_mb_per_day",
+            "MB/day",
+            "analysis",
+            "应用PSS内存增长斜率",
+            "Process PSS memory growth slope",
+        ),
     )
 }
 

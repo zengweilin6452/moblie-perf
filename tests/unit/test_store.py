@@ -393,3 +393,60 @@ def make_needs_attention_device_call():
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     return call
+
+
+def test_fetch_metric_series_joins_sessions_in_ascending_time(store):
+    """泄漏趋势查询：同包同档案的 run 聚合随 startedAt 升序返回（ticket 13）。"""
+    for run_id, started_at, profile, median in [
+        ("r2", "2026-10-22T10:00:00+08:00", "Xiaomi-2206123SC-Android14", 120.0),
+        ("r0", "2026-10-20T10:00:00+08:00", "Xiaomi-2206123SC-Android14", 100.0),
+        ("r1", "2026-10-21T10:00:00+08:00", "Xiaomi-2206123SC-Android14", 110.0),
+    ]:
+        store.record_session(
+            {
+                "run_id": run_id,
+                "target": "com.sinosoft.trainapp",
+                "device_profile": profile,
+                "started_at": started_at,
+                "duration_s": 47.0,
+            }
+        )
+        store.record_metrics(
+            run_id,
+            [{"metric_key": "mem_pss_mb", "unit": "MB", "median": median, "sample_count": 46}],
+        )
+
+    series = store.fetch_metric_series("com.sinosoft.trainapp", "mem_pss_mb")
+
+    assert [row["run_id"] for row in series] == ["r0", "r1", "r2"]
+    assert [row["median"] for row in series] == [100.0, 110.0, 120.0]
+    assert series[0]["device_profile"] == "Xiaomi-2206123SC-Android14"
+    assert series[0]["duration_s"] == 47.0
+
+
+def test_fetch_metric_series_filters_by_profile(store):
+    for run_id, profile in [("r0", "A"), ("r1", "B")]:
+        store.record_session(
+            {
+                "run_id": run_id,
+                "target": "com.sinosoft.trainapp",
+                "device_profile": profile,
+                "started_at": f"2026-10-2{run_id[-1]}T10:00:00+08:00",
+            }
+        )
+        store.record_metrics(
+            run_id, [{"metric_key": "mem_pss_mb", "unit": "MB", "median": 100.0}]
+        )
+
+    assert [row["run_id"] for row in store.fetch_metric_series(
+        "com.sinosoft.trainapp", "mem_pss_mb", profile="B"
+    )] == ["r1"]
+
+
+def test_fetch_metric_series_skips_runs_without_that_metric(store):
+    store.record_session({"run_id": "r0", "target": "com.sinosoft.trainapp"})
+    store.record_metrics(
+        "r0", [{"metric_key": "cpu_process_pct", "unit": "%", "median": 5.0}]
+    )
+
+    assert store.fetch_metric_series("com.sinosoft.trainapp", "mem_pss_mb") == []
