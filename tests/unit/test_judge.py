@@ -178,6 +178,7 @@ def test_threshold_metric_missing_from_baseline_is_not_tested():
     verdict = judge(make_report(), spec)
 
     assert verdict.verdict == "not_tested"
+    assert "bili-home-v3" in verdict.reason
 
 
 def test_empty_baseline_data_is_not_tested():

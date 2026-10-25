@@ -103,6 +103,10 @@ def judge(report: dict[str, Any], spec: JudgeSpec) -> Verdict:
             f"设备档案不匹配：baseline {spec.baseline!r} 绑定 "
             f"{spec.baseline_profile!r}，run 为 {run_profile!r}（口径不可比）",
         )
+    if not spec.baseline_data:
+        return _not_tested(
+            spec, f"baseline {spec.baseline!r} 不存在或没有任何指标数据，无法判定"
+        )
 
     window = {
         "startedAt": report.get("startedAt"),
