@@ -600,3 +600,12 @@ def test_report_baseline_bad_threshold_spec_returns_nonzero(tmp_path, capsys):
 
     assert exit_code == 1
     assert "threshold" in capsys.readouterr().err.lower()
+
+
+def test_serve_command_is_reserved_placeholder(capsys):
+    """§6.6：serve HTTP 模式仅预留接口不实现，占位退出码 2。"""
+    exit_code = cli.main(["serve"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "预留" in captured.out + captured.err

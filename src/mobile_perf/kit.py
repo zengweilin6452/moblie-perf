@@ -25,7 +25,7 @@ from .keeper import (
     parse_foreground_component,
     parse_foreground_package,
 )
-from .session import CollectSession
+from .session import CollectSession, SessionSpec
 from .store import PerfStore
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,9 @@ KEEPER_BORROW_PURPOSE = "mobile_perf.keeper"
 
 DEFAULT_KEEP_RUNS = 200
 DEFAULT_KEEP_DAYS = 30.0
+
+# collect() kwargs 的未传哨兵：与 SessionSpec 字段区分"显式覆盖"与"沿用 spec/默认"
+_UNSET: Any = object()
 
 
 class CollectError(RuntimeError):
@@ -840,19 +843,45 @@ class PerfKit:
 
     def collect(
         self,
+        spec: SessionSpec | None = None,
         *,
-        target: str,
-        items: list[str],
-        host_run_id: str | None = None,
-        runs_dir: str | Path | None = None,
-        supplement: bool = True,
-        supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
+        target: Any = _UNSET,
+        items: Any = _UNSET,
+        host_run_id: Any = _UNSET,
+        runs_dir: Any = _UNSET,
+        supplement: Any = _UNSET,
+        supplement_interval_s: Any = _UNSET,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
-        退出 with 块即 finalize（停止 → pull → 校验 → 归档 → 入库 → 报告）；
-        报告同时在 scope.report 上留存。host_run_id 未传时自动生成。
+        主形态 ``kit.collect(SessionSpec(...))``；既有 kwargs 形态保留兼容，
+        显式 kwargs 优先于 spec 字段。退出 with 块即 finalize（停止 → pull →
+        校验 → 归档 → 入库 → 报告）；报告同时在 scope.report 上留存。
+        host_run_id 未传时自动生成。
         """
+        if spec is not None:
+            if target is _UNSET:
+                target = spec.target
+            if items is _UNSET:
+                items = spec.items
+            if host_run_id is _UNSET:
+                host_run_id = spec.host_run_id
+            if runs_dir is _UNSET:
+                runs_dir = spec.runs_dir
+            if supplement is _UNSET:
+                supplement = spec.supplement
+            if supplement_interval_s is _UNSET:
+                supplement_interval_s = spec.supplement_interval_s
+        if target is _UNSET or items is _UNSET:
+            raise TypeError("collect 需要 SessionSpec 或显式 target=/items= 参数")
+        if host_run_id is _UNSET:
+            host_run_id = None
+        if runs_dir is _UNSET:
+            runs_dir = None
+        if supplement is _UNSET:
+            supplement = True
+        if supplement_interval_s is _UNSET:
+            supplement_interval_s = supplement_module.DEFAULT_INTERVAL_S
         return CollectScope(
             self,
             target=target,

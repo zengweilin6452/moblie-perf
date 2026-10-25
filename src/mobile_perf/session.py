@@ -10,7 +10,27 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+from .supplement import DEFAULT_INTERVAL_S
+
+
+@dataclass(frozen=True)
+class SessionSpec:
+    """一次采集会话的声明（设计方案 §6.2 库 API 主形态）。
+
+    target 为被测应用包名；items 为 SoloPi 采集项（GLOSSARY：Collect Items，
+    API 参数名沿用上游契约，由指标字典翻译为 canonical key）。host_run_id 未传
+    时由 kit 自动生成；runs_dir/supplement 与 kit.collect 同名参数语义一致。
+    """
+
+    target: str
+    items: list[str]
+    host_run_id: str | None = None
+    runs_dir: str | Path | None = None
+    supplement: bool = True
+    supplement_interval_s: float = DEFAULT_INTERVAL_S
 
 
 @dataclass(frozen=True)

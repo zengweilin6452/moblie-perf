@@ -89,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     trend_parser.add_argument("--serial", help="设备 serial（趋势只读库，不连设备）")
     trend_parser.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
     trend_parser.add_argument("--db", help="SQLite 路径（默认 <repo>/data/mobile_perf.db）")
+
+    sub.add_parser(
+        "serve",
+        help="HTTP 服务（设计方案 §6.6：仅预留接口，未实现）",
+    )
     return parser
 
 
@@ -273,6 +278,12 @@ def _run_trend(args: argparse.Namespace, kit_factory=None) -> int:
     return 0
 
 
+def _run_serve(args: argparse.Namespace, kit_factory=None) -> int:
+    """§6.6：serve HTTP 模式仅预留接口不实现（回环 + gate 门控，形态对齐 viewer）。"""
+    print("[mobile-perf] serve 为预留接口，未实现（设计方案 §6.6）", file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -283,5 +294,7 @@ def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
         return _run_report(args, kit_factory)
     if args.command == "trend":
         return _run_trend(args, kit_factory)
+    if args.command == "serve":
+        return _run_serve(args, kit_factory)
     build_parser().error(f"未知命令: {args.command}")
     return 2

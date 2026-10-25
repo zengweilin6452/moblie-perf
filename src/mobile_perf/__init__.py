@@ -2,12 +2,14 @@
 
 from .judge import JudgeSpec, Verdict
 from .kit import CollectError, PerfKit, ProfileMismatchError, TrendError
+from .session import SessionSpec
 
 __all__ = [
     "CollectError",
     "JudgeSpec",
     "PerfKit",
     "ProfileMismatchError",
+    "SessionSpec",
     "TrendError",
     "Verdict",
 ]

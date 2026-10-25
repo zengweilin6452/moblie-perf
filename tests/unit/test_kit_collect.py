@@ -199,3 +199,51 @@ def test_ensure_ready_restores_foreground_after_doctor_steals(tmp_path):
     assert detail["observed"] == "com.alipay.hulu"
     assert detail["restored"] is True
     assert any(args[-4:-1] == ["am", "start", "-n"] for args in recorded)
+
+
+# ---- A5：SessionSpec 库 API 主形态（§6.2） ----
+
+def test_collect_accepts_session_spec(tmp_path):
+    from mobile_perf import SessionSpec
+
+    kit = _counting_kit(tmp_path)
+    spec = SessionSpec(target="tv.danmaku.bili", items=["CPU"], host_run_id="run-spec-1")
+
+    with kit.collect(spec) as scope:
+        scope.mark("done")
+
+    report = scope.finalize()
+    assert report["runId"] == "run-spec-1"
+    assert report["target"] == "tv.danmaku.bili"
+    assert report["items"] == ["CPU"]
+
+
+def test_collect_kwargs_override_spec_fields(tmp_path):
+    from mobile_perf import SessionSpec
+
+    kit = _counting_kit(tmp_path)
+    spec = SessionSpec(target="tv.danmaku.bili", items=["CPU"], host_run_id="run-spec-a")
+
+    with kit.collect(spec, host_run_id="run-spec-b") as scope:
+        pass
+
+    assert scope.finalize()["runId"] == "run-spec-b"  # 显式 kwargs 优先于 spec 字段
+
+
+def test_session_spec_defaults_and_export():
+    from mobile_perf import SessionSpec
+    from mobile_perf.supplement import DEFAULT_INTERVAL_S
+
+    spec = SessionSpec(target="tv.danmaku.bili", items=["CPU", "FPS"])
+
+    assert spec.host_run_id is None
+    assert spec.runs_dir is None
+    assert spec.supplement is True
+    assert spec.supplement_interval_s == DEFAULT_INTERVAL_S
+
+
+def test_collect_without_spec_or_target_raises(tmp_path):
+    kit = _counting_kit(tmp_path)
+
+    with pytest.raises(TypeError, match="SessionSpec|target"):
+        kit.collect()
