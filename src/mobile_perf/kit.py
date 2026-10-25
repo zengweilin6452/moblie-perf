@@ -13,6 +13,8 @@ from . import metrics as metrics_module
 from . import report as report_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
+from .judge import JudgeSpec, Verdict
+from .judge import judge as _judge_report
 from .keeper import Keeper, ReadinessReport
 from .session import CollectSession
 from .store import PerfStore
@@ -262,6 +264,54 @@ class PerfKit:
             "profileMismatch": profile_mismatch,
             "runs": runs,
         }
+
+    def save_baseline(
+        self,
+        report: dict[str, Any],
+        name: str,
+        metric_keys: list[str] | None = None,
+    ) -> int:
+        """把一个 run 的报告存为命名基线：每指标取 median 入 baselines 表。
+
+        基线绑定报告的 target 与 device_profile（可比性单位）；thresholds 不入库。
+        metric_keys 未传时保存报告里全部指标。返回写入行数。
+        """
+        metrics_summary = report.get("metricsSummary")
+        if not metrics_summary:
+            raise ValueError("报告缺少 metricsSummary 聚合数据，无法保存基线")
+        rows = 0
+        for metric_key, entry in sorted(metrics_summary.items()):
+            if metric_keys is not None and metric_key not in metric_keys:
+                continue
+            self.store.record_baseline(
+                name=name,
+                target_pkg=report.get("target"),
+                device_profile=report.get("deviceProfile"),
+                metric_key=metric_key,
+                value=entry.get("median"),
+                source_run_id=report.get("runId"),
+            )
+            rows += 1
+        return rows
+
+    def judge(self, report: dict[str, Any], spec: JudgeSpec) -> Verdict:
+        """门禁判定门面：从 store 解析基线（值与绑定档案）后交给纯函数 judge。
+
+        基线不存在或无数据时以空解析结果传入，纯函数按前置不满足判 not_tested；
+        宿主持有的 JudgeSpec 不被修改（解析结果经 resolved 副本注入）。
+        """
+        rows = self.store.fetch_baseline(spec.baseline)
+        profile = next(
+            (row.get("device_profile") for row in rows if row.get("device_profile")), None
+        )
+        data = {
+            row["metric_key"]: {
+                "value": row.get("value"),
+                "sourceRunId": row.get("source_run_id"),
+            }
+            for row in rows
+        }
+        return _judge_report(report, spec.resolved(profile=profile, data=data))
 
     def run_collect(
         self,

@@ -1,12 +1,14 @@
 """PerfKit.run_collect 编排的单元测试：假后端注入，不碰 adb 与真机。"""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from mobile_perf import kit as kit_module
 from mobile_perf.gate import FileLockGate, GateBusyError
+from mobile_perf.judge import JudgeSpec
 from mobile_perf.kit import CollectError, PerfKit, TrendError
 from mobile_perf.store import PerfStore
 
@@ -561,3 +563,116 @@ def test_kit_defaults_to_file_lock_gate(tmp_path):
     kit = PerfKit(adb_path=fake_adb(tmp_path), serial="749622c9")
 
     assert isinstance(kit.gate, FileLockGate)
+
+
+# ---- ticket 09：基线保存与门禁判定门面 ----
+
+BASELINE_REPORT = {
+    "runId": "run-baseline-src",
+    "target": "tv.danmaku.bili",
+    "deviceProfile": "PICO4-Android12",
+    "startedAt": "2026-10-25T09:00:00",
+    "stoppedAt": "2026-10-25T09:01:00",
+    "metricsSummary": {
+        "mem_pss_mb": {"unit": "MB", "median": 180.0, "sampleCount": 30},
+        "cpu_app_pct": {"unit": "%", "median": 12.0, "sampleCount": 30},
+    },
+}
+
+
+def make_judge_kit(tmp_path, **kwargs):
+    kit = make_kit(tmp_path, backend=None, **kwargs)
+    return kit
+
+
+def test_save_baseline_writes_median_rows_from_report(tmp_path):
+    kit = make_judge_kit(tmp_path)
+
+    rows = kit.save_baseline(BASELINE_REPORT, name="bili-home-v3")
+
+    assert rows == 2
+    saved = kit.store.fetch_baseline("bili-home-v3")
+    by_key = {row["metric_key"]: row for row in saved}
+    assert by_key["mem_pss_mb"]["value"] == 180.0
+    assert by_key["mem_pss_mb"]["source_run_id"] == "run-baseline-src"
+    assert by_key["mem_pss_mb"]["target_pkg"] == "tv.danmaku.bili"
+    assert by_key["mem_pss_mb"]["device_profile"] == "PICO4-Android12"
+    assert by_key["mem_pss_mb"]["created_at"]
+
+
+def test_save_baseline_can_filter_metric_keys(tmp_path):
+    kit = make_judge_kit(tmp_path)
+
+    rows = kit.save_baseline(BASELINE_REPORT, name="bili-mem-only", metric_keys=["mem_pss_mb"])
+
+    assert rows == 1
+    assert [r["metric_key"] for r in kit.store.fetch_baseline("bili-mem-only")] == ["mem_pss_mb"]
+
+
+def test_save_baseline_requires_metrics_summary(tmp_path):
+    kit = make_judge_kit(tmp_path)
+
+    with pytest.raises(ValueError, match="metricsSummary"):
+        kit.save_baseline({"runId": "run-empty", "metricsSummary": None}, name="b")
+
+
+def test_judge_resolves_baseline_from_store_and_returns_verdict(tmp_path):
+    kit = make_judge_kit(tmp_path)
+    kit.save_baseline(BASELINE_REPORT, name="bili-home-v3")
+    spec = JudgeSpec(
+        baseline="bili-home-v3",
+        thresholds={"mem_pss_mb": ("lt", 220.0, "fail")},
+    )
+    run_report = dict(
+        BASELINE_REPORT,
+        runId="run-under-judgement",
+        metricsSummary={"mem_pss_mb": {"unit": "MB", "median": 150.0, "sampleCount": 30}},
+    )
+
+    verdict = kit.judge(run_report, spec)
+
+    assert verdict.verdict == "passed"
+    (check,) = verdict.checks
+    assert check["baselineValue"] == 180.0
+    assert check["baselineSourceRunId"] == "run-baseline-src"
+
+
+def test_judge_flags_profile_mismatch_between_baseline_and_run(tmp_path):
+    kit = make_judge_kit(tmp_path)
+    kit.save_baseline(BASELINE_REPORT, name="bili-home-v3")
+    spec = JudgeSpec(
+        baseline="bili-home-v3",
+        thresholds={"mem_pss_mb": ("lt", 220.0, "fail")},
+    )
+    run_report = dict(
+        BASELINE_REPORT,
+        deviceProfile="PICO4-Android14",
+        metricsSummary={"mem_pss_mb": {"unit": "MB", "median": 150.0, "sampleCount": 30}},
+    )
+
+    verdict = kit.judge(run_report, spec)
+
+    assert verdict.verdict == "not_tested"
+    assert "档案" in verdict.reason
+
+
+def test_judge_unknown_baseline_is_not_tested(tmp_path):
+    kit = make_judge_kit(tmp_path)
+    spec = JudgeSpec(baseline="no-such", thresholds={"mem_pss_mb": ("lt", 220.0, "fail")})
+
+    verdict = kit.judge(dict(BASELINE_REPORT), spec)
+
+    assert verdict.verdict == "not_tested"
+    assert "no-such" in verdict.reason
+
+
+def test_judge_spec_stays_unresolved_after_facade_call(tmp_path):
+    """门面解析基线用 replace 出副本，宿主持有的 spec 不被改动。"""
+    kit = make_judge_kit(tmp_path)
+    kit.save_baseline(BASELINE_REPORT, name="bili-home-v3")
+    spec = JudgeSpec(baseline="bili-home-v3", thresholds={})
+
+    kit.judge(dict(BASELINE_REPORT), spec)
+
+    assert spec.baseline_data == {}
+    assert spec.baseline_profile is None
