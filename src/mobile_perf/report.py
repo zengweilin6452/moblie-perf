@@ -169,6 +169,7 @@ def build_report(
         "metricsSummary": _with_metric_labels(metrics_summary),
         "series": series if series is not None else {},
         "events": list(events or []),
+        "startup": meta.get("startup"),
         "integrity": integrity,
     }
 
@@ -323,6 +324,7 @@ th {{ background: #f2f4f8; }}
 <h1>mobile-perf 性能报告：{run_id}</h1>
 <h2>会话元信息</h2>
 <table class="meta">{meta_rows}</table>
+{startup_markup}
 <h2>聚合统计</h2>
 <table>
 <tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
@@ -342,12 +344,13 @@ th {{ background: #f2f4f8; }}
 (function () {{
   var report = window.__REPORT__;
   var series = report.series || {{}};
+  var startup = report.startup || null;
   Object.keys(series).forEach(function (key) {{
     var item = series[key];
     var el = document.getElementById("chart-" + key);
     if (!el || typeof echarts === "undefined") return;
     var chart = echarts.init(el);
-    chart.setOption({{
+    var option = {{
       title: {{ text: item.labelZh + " / " + item.labelEn + " (" + item.unit + ")",
                textStyle: {{ fontSize: 13 }} }},
       tooltip: {{ trigger: "axis" }},
@@ -358,7 +361,9 @@ th {{ background: #f2f4f8; }}
         data: item.points.map(function (p) {{ return [p[0], p[1]]; }})
       }}],
       grid: {{ left: 60, right: 24, top: 40, bottom: 40 }}
-    }});
+    }};
+__STARTUP_MARKLINE__
+    chart.setOption(option);
   }});
 }})();
 </script>
@@ -407,12 +412,15 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
     html_text = _HTML_TEMPLATE.format(
         run_id=html_escape(report["runId"]),
         meta_rows=meta_rows,
+        startup_markup=_startup_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
         report_json=report_json,
         combined_script=combined_script,
     )
+    # 启动点标记按需注入（占位符在 format 之后替换，避免花括号转义）
+    html_text = html_text.replace("__STARTUP_MARKLINE__", _startup_markline_script(report))
     path = Path(run_dir) / "report.html"
     path.write_text(html_text, encoding="utf-8")
     return path
@@ -425,6 +433,7 @@ _COMBINED_SCRIPT = """<script>
 (function () {
   var report = window.__REPORT__ || {};
   var series = report.series || {};
+  var startup = report.startup || null;
   var fps = series["fps_frame"];
   var supplement = [series["temp_battery_c"], series["gpu_util_pct"]].filter(Boolean);
   if (!fps || supplement.length === 0 || typeof echarts === "undefined") return;
@@ -435,6 +444,7 @@ _COMBINED_SCRIPT = """<script>
     name: fps.labelZh + " (" + fps.unit + ")", type: "line", showSymbol: false, yAxisIndex: 0,
     data: fps.points.map(function (p) { return [p[0], p[1]]; })
   }];
+__STARTUP_MARKLINE__
   supplement.forEach(function (item) {
     lines.push({
       name: item.labelZh + " (" + item.unit + ")", type: "line", showSymbol: false, yAxisIndex: 1,
@@ -467,9 +477,70 @@ def _combined_thermal_markup(series: dict[str, Any]) -> tuple[str, str]:
     return div, _COMBINED_SCRIPT.replace("__CHART_ID__", _COMBINED_CHART_ID)
 
 
+def _startup_markline_script(report: dict[str, Any]) -> str:
+    """启动点 markLine 脚本块（ticket 12）：有启动编排且计得 ms 才注入，否则替换为空。"""
+    startup = report.get("startup")
+    if not startup or not isinstance(startup.get("elapsedS"), (int, float)):
+        return ""
+    if not isinstance(startup.get("ms"), (int, float)):
+        return ""
+    return """if (startup && typeof startup.elapsedS === "number") {
+    var mark = {
+      symbol: "none",
+      lineStyle: { color: "#d0483e", type: "dashed" },
+      label: { formatter: "启动 " + startup.ms + " ms", fontSize: 10 },
+      data: [{ xAxis: startup.elapsedS }]
+    };
+    if (typeof option !== "undefined") { option.series[0].markLine = mark; }
+    else if (typeof lines !== "undefined" && lines.length > 0) { lines[0].markLine = mark; }
+  }
+  """
+
+
+def _startup_markup(report: dict[str, Any]) -> str:
+    """启动时间小节（ticket 12）：无启动编排返回空串；启动失败如实呈现 error。"""
+    startup = report.get("startup")
+    if not startup:
+        return ""
+    metric = startup.get("metricKey") or ""
+    spec = metrics_module.METRICS.get(metric)
+    label = _bilingual(spec.label_zh, spec.label_en, metric) if spec else metric
+    header = f"{html_escape(label)}（<code>{html_escape(metric)}</code>）"
+    ms = startup.get("ms")
+    if ms is None:
+        return (
+            f'<h2>启动时间 / Startup</h2><p>{header}：启动失败——'
+            f"{html_escape(str(startup.get('error') or '未知原因'))}</p>"
+        )
+    bits: list[str] = []
+    if startup.get("launchState"):
+        bits.append(f"LaunchState={startup['launchState']}")
+    if startup.get("displayedMs") is not None:
+        deviation = startup.get("deviationMs")
+        deviation_text = f"，偏差 {_fmt(deviation)} ms" if deviation is not None else ""
+        bits.append(f"logcat Displayed {_fmt(startup['displayedMs'])} ms{deviation_text}")
+    if startup.get("fullyDrawnMs") is not None:
+        bits.append(f"Fully drawn {_fmt(startup['fullyDrawnMs'])} ms")
+    if startup.get("elapsedS") is not None:
+        bits.append(f"启动点 {startup['elapsedS']} s")
+    detail = "；".join(html_escape(bit) for bit in bits)
+    return (
+        f'<h2>启动时间 / Startup</h2><p>{header}：<b>{_fmt(ms)} ms</b>'
+        + (f"（{detail}）" if detail else "")
+        + "</p>"
+    )
+
+
 def _meta_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
     integrity = report.get("integrity") or {}
     marks = report.get("marks") or []
+    startup = report.get("startup") or {}
+    if startup.get("ms") is not None:
+        startup_text = f"{startup.get('mode')} {_fmt(startup['ms'])} ms"
+    elif startup.get("error"):
+        startup_text = f"error: {startup['error']}"
+    else:
+        startup_text = ""
     rows = [
         ("被测应用 / Target", report.get("target")),
         ("Run ID", report.get("runId")),
@@ -482,6 +553,7 @@ def _meta_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
         ("时长 / Duration (s)", report.get("durationS")),
         ("SoloPi 会话", report.get("soloSessionId")),
         ("打标 / Marks", json.dumps(marks, ensure_ascii=False) if marks else "无"),
+        ("启动 / Startup", startup_text or "未编排"),
         ("产物 / Artifacts", "\n".join(report.get("artifacts") or []) or "无"),
         ("完整性 / Integrity", json.dumps(integrity, ensure_ascii=False) if integrity else "无"),
     ]

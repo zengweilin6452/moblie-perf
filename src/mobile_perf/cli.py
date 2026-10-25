@@ -52,6 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--runs-dir", help="run 产物根目录（默认 <repo>/runs）")
     collect_parser.add_argument("--run-id", help="宿主运行标识（默认自动生成）")
     collect_parser.add_argument(
+        "--start-mode",
+        choices=("cold", "warm"),
+        help=(
+            "启动编排（ticket 12）：cold=采集窗口内 force-stop 后拉起（冷启动）；"
+            "warm=退后台后再拉起（温启动）。启动发生在 SoloPi 采集窗口内，"
+            "启动期资源曲线覆盖启动时刻；不传则不编排启动"
+        ),
+    )
+    collect_parser.add_argument(
         "--device-profile",
         help="设备档案（机型+OS 大版本；趋势与基线的可比性单位，默认不记录）",
     )
@@ -160,6 +169,7 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
             duration_s=args.duration,
             host_run_id=args.run_id,
             runs_dir=args.runs_dir,
+            start_mode=args.start_mode,
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)
