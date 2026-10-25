@@ -172,10 +172,22 @@ FOREGROUND_RE = re.compile(
     r"(?:topResumedActivity|mResumedActivity|ResumedActivity).*?u0\s+([\w.]+)/"
 )
 
+# 同源行的组件名（pkg/cls，cls 允许相对形式 .Foo）——前台还原用它恢复
+# 采集前的具体页面，而不是把应用重置到启动页
+FOREGROUND_COMPONENT_RE = re.compile(
+    r"(?:topResumedActivity|mResumedActivity|ResumedActivity).*?u0\s+([\w.]+/[\w.$]+)"
+)
+
 
 def parse_foreground_package(stdout: str) -> str | None:
     """从 `dumpsys activity activities` 提取当前前台包名；读不到返回 None。"""
     match = FOREGROUND_RE.search(stdout or "")
+    return match.group(1) if match else None
+
+
+def parse_foreground_component(stdout: str) -> str | None:
+    """从同一 dumpsys 输出提取前台组件（pkg/cls）；读不到返回 None。"""
+    match = FOREGROUND_COMPONENT_RE.search(stdout or "")
     return match.group(1) if match else None
 
 
@@ -514,5 +526,6 @@ __all__ = [
     "parse_config_get_response",
     "parse_devices_stdout",
     "parse_foreground_package",
+    "parse_foreground_component",
     "parse_wlan_ip",
 ]

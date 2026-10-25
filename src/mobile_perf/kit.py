@@ -17,6 +17,7 @@ from .gate import DeviceGate, FileLockGate
 from .judge import JudgeSpec, Verdict
 from .judge import judge as _judge_report
 from .keeper import Keeper, ReadinessReport
+from .keeper import parse_foreground_component, parse_foreground_package
 from .session import CollectSession
 from .store import PerfStore
 
@@ -89,6 +90,279 @@ class HarnessBackend:
         return result.data
 
 
+class CollectScope:
+    """交互式采集窗口（设计方案 §6.2）：with 块内宿主驱动 UI 并 mark 打标。
+
+    __exit__ 无条件 finalize：宿主（如 pytest 用例）在块内失败也拿到完整
+    报告，端侧录制不会悬挂；finalize 幂等，显式调用与退出清理共用一次收口。
+    前台守卫（foreground_restore，默认开启，Q16 专项）：Harness perf-start
+    经 SoloPi Scheme 控制面启动录制，可能改变前台——作用域记下 start 前的
+    前台组件，start/stop 之后检测到漂移即还原（am start 组件或 monkey 启动），
+    事件随 run 入库（kind=foreground）供判读与专项验收。
+    """
+
+    def __init__(
+        self,
+        kit: "PerfKit",
+        *,
+        target: str,
+        items: list[str],
+        host_run_id: str | None,
+        runs_dir: Path | None,
+        supplement: bool,
+        supplement_interval_s: float,
+    ):
+        self._kit = kit
+        self.target = target
+        self.items = list(items)
+        self._host_run_id = host_run_id
+        self._supplement = supplement
+        self._supplement_interval_s = supplement_interval_s
+        self._run_id = host_run_id or collector.new_run_id()
+        runs_dir_path = Path(runs_dir) if runs_dir is not None else kit.runs_dir
+        self._run_dir = collector.create_run_dir(runs_dir_path, self._run_id)
+        self._artifacts_dir = self._run_dir / "artifacts"
+        self._session: CollectSession | None = None
+        self._poller: Any | None = None
+        self._watcher: Any | None = None
+        self._watch_warnings: list[dict[str, Any]] = []
+        self.foreground_before: dict[str, Any] | None = None
+        self.foreground_events: list[dict[str, Any]] = []
+        self.report: dict[str, Any] | None = None
+        self._finalized = False
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    def mark(self, label: str):
+        if self._session is None:
+            raise RuntimeError("cannot mark before collect scope is entered")
+        return self._session.mark(label)
+
+    def __enter__(self) -> "CollectScope":
+        kit = self._kit
+        backend = kit.backend
+        if kit.foreground_restore:
+            self.foreground_before = kit._read_foreground_state()
+        self._session = CollectSession(
+            target=self.target,
+            items=self.items,
+            serial=kit.serial,
+            start=lambda: kit._borrowed(
+                "mobile_perf.start", lambda: backend.start(self.target, self.items)
+            ),
+            stop=lambda session_id, output_dir: kit._borrowed(
+                "mobile_perf.stop_pull",
+                lambda: backend.stop(session_id, output_dir),
+            ),
+            clock=kit._clock,
+        )
+        self._session.start()
+        kit._supplement_offset = (0.0, "assumed")
+        self._poller = kit._start_supplement(
+            self._supplement, self._supplement_interval_s
+        )
+        self._watcher = kit._start_crash_watch(self.target, self._watch_warnings)
+        kit._guard_foreground(self, phase="after_start")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.finalize()
+        return False  # 块内异常原样传播；报告已在 finalize 产出
+
+    def finalize(self) -> dict[str, Any]:
+        """停止采集并走归档/入库/报告全链路；幂等，返回本次 run 的报告。"""
+        if self._finalized:
+            return self.report
+        self._finalized = True
+        kit = self._kit
+        supplement_result = None
+        # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
+        # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
+        if self._poller is not None:
+            supplement_result = self._poller.stop()
+        try:
+            record = self._session.stop(str(self._artifacts_dir))
+        finally:
+            # 监听是旁路进程：采集停止后立即回收，不悬挂
+            watch_events = kit._stop_crash_watch(self._watcher)
+        kit._guard_foreground(self, phase="after_stop")
+
+        artifact_files = collector.validate_artifacts(self._artifacts_dir)
+
+        # pull 完整性：设备端逐文件行数校验；通过才删设备端会话目录
+        remote_dir = (
+            record.stop_payload.get("outputPath")
+            if isinstance(record.stop_payload, dict)
+            else None
+        )
+        integrity_report = None
+        device_removed = False
+        if remote_dir:
+            integrity_report, device_removed = collector.cleanup_after_pull(
+                str(kit.adb_path),
+                kit.serial,
+                remote_dir,
+                self._artifacts_dir,
+                runner=kit._adb_runner,
+            )
+            device_row_check = "passed" if integrity_report.ok else "failed"
+        else:
+            device_row_check = "skipped"  # 载荷未带设备端路径（如注入替身后端）
+        integrity = {
+            "deviceRowCheck": device_row_check,
+            "deviceDirRemoved": device_removed,
+        }
+        if integrity_report is not None and not integrity_report.ok:
+            integrity["mismatches"] = integrity_report.mismatches
+            if integrity_report.probe_error:
+                integrity["probeError"] = integrity_report.probe_error
+
+        # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
+        aggregates = collector.aggregate_artifacts(self._artifacts_dir)
+
+        # 补采合并：样本落 artifacts（供报告重建 elapsed 时间轴），聚合并入本 run
+        supplement_info: dict[str, Any] = {"enabled": bool(self._poller)}
+        supplement_aggregates: list[dict[str, Any]] = []
+        if supplement_result is not None:
+            supplement_info.update(
+                {
+                    "intervalS": self._supplement_interval_s,
+                    "rounds": supplement_result.rounds,
+                    "errors": supplement_result.errors,
+                    "degraded": supplement_result.degraded,
+                    "clockOffsetS": kit._supplement_offset[0],
+                    "clockOffsetSource": kit._supplement_offset[1],
+                }
+            )
+            if supplement_result.samples:
+                supplement_aggregates = supplement_module.aggregate_samples(
+                    supplement_result.samples
+                )
+            if supplement_aggregates:
+                csv_path = supplement_module.write_supplement_csv(
+                    self._artifacts_dir / "supplement_thermal_gpu.csv",
+                    supplement_result.samples,
+                )
+                supplement_info["csv"] = str(csv_path)
+
+        merged_aggregates = aggregates + supplement_aggregates
+        metrics_summary = report_module.summarize_aggregates(merged_aggregates)
+
+        meta = {
+            "runId": self._run_id,
+            "target": self.target,
+            "items": self.items,
+            "serial": kit.serial,
+            "deviceProfile": kit.device_profile,
+            "hostRunId": self._host_run_id,
+            "startedAt": record.started_at,
+            "stoppedAt": record.stopped_at,
+            "durationS": round(record.duration_s, 3),
+            "soloSessionId": record.session_id,
+            "marks": record.marks_as_list(),
+            "status": "stopped",
+            "integrity": integrity,
+            "supplement": supplement_info,
+        }
+        collector.write_meta(self._run_dir, meta)
+
+        report_data = report_module.build_report(
+            meta=meta,
+            record={
+                "sessionId": record.session_id,
+                "marks": record.marks_as_list(),
+            },
+            artifacts=[str(path) for path in artifact_files],
+            metrics_summary=metrics_summary,
+            integrity=integrity,
+            series=report_module.series_from_artifacts(self._artifacts_dir),
+            # events 先置空，事件入库后在落盘前回填（见下方）
+            events=[],
+        )
+
+        store = kit.store
+        store.record_session(
+            {
+                "run_id": self._run_id,
+                "solo_session_id": record.session_id,
+                "serial": kit.serial,
+                "device_profile": kit.device_profile,
+                "target": self.target,
+                "items": self.items,
+                "started_at": record.started_at,
+                "stopped_at": record.stopped_at,
+                "duration_s": record.duration_s,
+                "host_run_id": self._host_run_id,
+                "status": "stopped",
+                "run_dir": str(self._run_dir),
+            }
+        )
+        store.record_metrics(self._run_id, merged_aggregates)
+        store.record_run_artifacts(self._run_id, [str(self._artifacts_dir), str(self._run_dir)])
+        for degraded in supplement_info.get("degraded", []):
+            store.record_event(
+                self._run_id,
+                kind="supplement_degraded",
+                detail={
+                    "key": degraded["key"],
+                    "reason": degraded["reason"],
+                    "rounds": supplement_info.get("rounds"),
+                    "errors": supplement_info.get("errors"),
+                },
+            )
+        # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
+        for event in watch_events:
+            store.record_event(
+                self._run_id, kind=event["kind"], detail=event["detail"], ts=event["ts"]
+            )
+        for warning in self._watch_warnings:
+            store.record_event(self._run_id, kind="logwatch_warning", detail=dict(warning))
+        # 前台守卫事件（Q16 专项证据）：start/stop 后的漂移与还原记录
+        for event in self.foreground_events:
+            store.record_event(self._run_id, kind="foreground", detail=dict(event))
+        if integrity_report is not None and not integrity_report.ok:
+            reason = (
+                "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
+            )
+            store.record_event(
+                self._run_id,
+                kind="integrity_warning",
+                detail={
+                    "reason": reason,
+                    "deviceDir": remote_dir,
+                    "deviceDirKept": not device_removed,
+                    "mismatches": integrity_report.mismatches,
+                    "probeError": integrity_report.probe_error,
+                },
+            )
+            logger.warning(
+                "run %s pull 完整性异常（%s），设备端目录保留: %s",
+                self._run_id,
+                reason,
+                remote_dir,
+            )
+
+        # 本地数据保留（可配置）：仅清理本组件 run 目录，失败不阻断采集闭环
+        try:
+            collector.enforce_retention(
+                kit.runs_dir,
+                store,
+                keep_runs=kit.keep_runs,
+                keep_days=kit.keep_days,
+            )
+        except Exception:  # noqa: BLE001 - 清理失败只告警
+            logger.exception("本地保留策略清理失败")
+
+        # 报告最后落盘：events 已入库，随 run 数据返回供报告时间轴渲染
+        report_data["events"] = store.fetch_events(self._run_id)
+        report_module.write_report(self._run_dir, report_data)
+        report_module.write_html(self._run_dir, report_data)
+        self.report = report_data
+        return report_data
+
+
 class PerfKit:
     """组件门面：宿主与 CLI 的统一入口。
 
@@ -117,6 +391,7 @@ class PerfKit:
         dialog_probe: Callable[[], Any] | None = None,
         device_profile: str | None = None,
         logwatch_factory: Callable[..., Any] | None = None,
+        foreground_restore: bool = True,
     ):
         self.adb_path = resolve_adb(adb_path)
         if not serial:
@@ -138,6 +413,7 @@ class PerfKit:
         self._dialog_probe = dialog_probe
         self.device_profile = device_profile
         self._logwatch_factory = logwatch_factory
+        self.foreground_restore = foreground_restore
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
 
@@ -167,6 +443,86 @@ class PerfKit:
         """在短事务借用窗口内执行一个设备命令（ADR-0001：完成即还）。"""
         with self.gate.borrow(self.serial, purpose=purpose):
             return action()
+
+    def _shell(self, args: list[str], timeout_s: float = 15.0) -> Any:
+        """发起一次 adb shell 命令：注入 runner 优先，否则 supplement 默认通道。"""
+        if self._adb_runner is not None:
+            return self._adb_runner([str(self.adb_path), *args], timeout_s)
+        return supplement_module.default_call_device(str(self.adb_path))(args, timeout_s)
+
+    def _read_foreground_state(self) -> dict[str, Any] | None:
+        """短事务读取前台状态（包名 + 组件）；读不到或命令失败返回 None。"""
+        try:
+            result = self._borrowed(
+                "mobile_perf.foreground",
+                lambda: self._shell(
+                    ["-s", self.serial, "shell", "dumpsys", "activity", "activities"]
+                ),
+            )
+        except Exception:  # noqa: BLE001 - 读不到前台就放弃守卫，不阻断采集
+            return None
+        stdout = getattr(result, "stdout", "") or ""
+        package = parse_foreground_package(stdout)
+        if not package:
+            return None
+        return {"package": package, "component": parse_foreground_component(stdout)}
+
+    def _restore_foreground(self, state: dict[str, Any]) -> str:
+        """把前台还原为采集前状态；返回还原途径（component/monkey）。"""
+        if state.get("component"):
+            args = ["-s", self.serial, "shell", "am", "start", "-n", state["component"]]
+            via = "component"
+        else:
+            args = [
+                "-s",
+                self.serial,
+                "shell",
+                "monkey",
+                "-p",
+                state["package"],
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ]
+            via = "monkey"
+        self._borrowed("mobile_perf.foreground", lambda: self._shell(args))
+        return via
+
+    def _guard_foreground(self, scope: "CollectScope", *, phase: str) -> None:
+        """前台守卫：phase 时刻检测前台漂移，漂移即还原为采集前状态。
+
+        守卫失败（读取/还原异常）只记事件，绝不阻断采集闭环（Q16：如实
+        记录而非掩盖）。
+        """
+        if not self.foreground_restore or scope.foreground_before is None:
+            return
+        before_pkg = scope.foreground_before["package"]
+        try:
+            state = self._read_foreground_state()
+            observed = state["package"] if state else None
+            if observed == before_pkg:
+                return
+            via = self._restore_foreground(scope.foreground_before)
+            scope.foreground_events.append(
+                {
+                    "phase": phase,
+                    "before": before_pkg,
+                    "observed": observed,
+                    "restored": True,
+                    "restoreVia": via,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - 守卫失败不阻断采集
+            logger.warning("前台守卫（%s）失败: %s", phase, exc)
+            scope.foreground_events.append(
+                {
+                    "phase": phase,
+                    "before": before_pkg,
+                    "observed": None,
+                    "restored": False,
+                    "error": str(exc),
+                }
+            )
 
     def ensure_ready(self) -> ReadinessReport:
         """巡检自愈（幂等可重入）：doctor + tcpip 自愈 + 无障碍/充电/前台/时钟检查。
@@ -384,6 +740,31 @@ class PerfKit:
         }
         return _judge_report(report, spec.resolved(profile=profile, data=data))
 
+    def collect(
+        self,
+        *,
+        target: str,
+        items: list[str],
+        host_run_id: str | None = None,
+        runs_dir: str | Path | None = None,
+        supplement: bool = True,
+        supplement_interval_s: float = supplement_module.DEFAULT_INTERVAL_S,
+    ) -> CollectScope:
+        """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
+
+        退出 with 块即 finalize（停止 → pull → 校验 → 归档 → 入库 → 报告）；
+        报告同时在 scope.report 上留存。host_run_id 未传时自动生成。
+        """
+        return CollectScope(
+            self,
+            target=target,
+            items=items,
+            host_run_id=host_run_id,
+            runs_dir=runs_dir,
+            supplement=supplement,
+            supplement_interval_s=supplement_interval_s,
+        )
+
     def run_collect(
         self,
         *,
@@ -397,220 +778,24 @@ class PerfKit:
     ) -> dict[str, Any]:
         """一次完整采集闭环：启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
-        supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采温度/GPU
-        （不持 gate 设备权），stop 后合并入库（source=pc_supplement）并进报告
-        series；充电降级（巡检 degraded_items 含 Temperature）时温度补采跳过。
+        collect() 的定时收口特例：窗口内 sleep duration_s，由作用域退出统一
+        收口。supplement=True 时（默认）采集期间由 SupplementPoller 旁路补采
+        温度/GPU（不持 gate 设备权），stop 后合并入库（source=pc_supplement）
+        并进报告 series；充电降级（巡检 degraded_items 含 Temperature）时
+        温度补采跳过。
         """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
-        run_id = host_run_id or collector.new_run_id()
-        runs_dir_path = Path(runs_dir) if runs_dir is not None else self.runs_dir
-        run_dir = collector.create_run_dir(runs_dir_path, run_id)
-        artifacts_dir = run_dir / "artifacts"
-
-        backend = self.backend
-        session = CollectSession(
+        with self.collect(
             target=target,
             items=items,
-            serial=self.serial,
-            start=lambda: self._borrowed(
-                "mobile_perf.start", lambda: backend.start(target, items)
-            ),
-            stop=lambda session_id, output_dir: self._borrowed(
-                "mobile_perf.stop_pull",
-                lambda: backend.stop(session_id, output_dir),
-            ),
-            clock=self._clock,
-        )
-        session.start()
-        self._supplement_offset = (0.0, "assumed")
-        poller = self._start_supplement(supplement, supplement_interval_s)
-        supplement_result = None
-        watcher: Any | None = None
-        watch_warnings: list[dict[str, Any]] = []
-        watch_events: list[dict[str, Any]] = []
-        try:
-            watcher = self._start_crash_watch(target, watch_warnings)
+            host_run_id=host_run_id,
+            runs_dir=runs_dir,
+            supplement=supplement,
+            supplement_interval_s=supplement_interval_s,
+        ) as scope:
             self._sleep(duration_s)
-        finally:
-            # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
-            # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
-            if poller is not None:
-                supplement_result = poller.stop()
-            try:
-                # 中断也尽力停止端侧采集，避免留下无人停掉的录制会话
-                record = session.stop(str(artifacts_dir))
-            finally:
-                # 监听是旁路进程：采集停止后立即回收，不悬挂
-                watch_events = self._stop_crash_watch(watcher)
-
-        artifact_files = collector.validate_artifacts(artifacts_dir)
-
-        # pull 完整性：设备端逐文件行数校验；通过才删设备端会话目录
-        remote_dir = (
-            record.stop_payload.get("outputPath")
-            if isinstance(record.stop_payload, dict)
-            else None
-        )
-        integrity_report = None
-        device_removed = False
-        if remote_dir:
-            integrity_report, device_removed = collector.cleanup_after_pull(
-                str(self.adb_path),
-                self.serial,
-                remote_dir,
-                artifacts_dir,
-                runner=self._adb_runner,
-            )
-            device_row_check = "passed" if integrity_report.ok else "failed"
-        else:
-            device_row_check = "skipped"  # 载荷未带设备端路径（如注入替身后端）
-        integrity = {
-            "deviceRowCheck": device_row_check,
-            "deviceDirRemoved": device_removed,
-        }
-        if integrity_report is not None and not integrity_report.ok:
-            integrity["mismatches"] = integrity_report.mismatches
-            if integrity_report.probe_error:
-                integrity["probeError"] = integrity_report.probe_error
-
-        # 聚合只吃本地已 pull 的数据；原始 CSV 永不入库
-        aggregates = collector.aggregate_artifacts(artifacts_dir)
-
-        # 补采合并：样本落 artifacts（供报告重建 elapsed 时间轴），聚合并入本 run
-        supplement_info: dict[str, Any] = {"enabled": bool(poller)}
-        supplement_aggregates: list[dict[str, Any]] = []
-        if supplement_result is not None:
-            supplement_info.update(
-                {
-                    "intervalS": supplement_interval_s,
-                    "rounds": supplement_result.rounds,
-                    "errors": supplement_result.errors,
-                    "degraded": supplement_result.degraded,
-                    "clockOffsetS": self._supplement_offset[0],
-                    "clockOffsetSource": self._supplement_offset[1],
-                }
-            )
-            if supplement_result.samples:
-                supplement_aggregates = supplement_module.aggregate_samples(
-                    supplement_result.samples
-                )
-            if supplement_aggregates:
-                csv_path = supplement_module.write_supplement_csv(
-                    artifacts_dir / "supplement_thermal_gpu.csv", supplement_result.samples
-                )
-                supplement_info["csv"] = str(csv_path)
-
-        merged_aggregates = aggregates + supplement_aggregates
-        metrics_summary = report_module.summarize_aggregates(merged_aggregates)
-
-        meta = {
-            "runId": run_id,
-            "target": target,
-            "items": list(items),
-            "serial": self.serial,
-            "deviceProfile": self.device_profile,
-            "hostRunId": host_run_id,
-            "startedAt": record.started_at,
-            "stoppedAt": record.stopped_at,
-            "durationS": round(record.duration_s, 3),
-            "soloSessionId": record.session_id,
-            "marks": record.marks_as_list(),
-            "status": "stopped",
-            "integrity": integrity,
-            "supplement": supplement_info,
-        }
-        collector.write_meta(run_dir, meta)
-
-        report_data = report_module.build_report(
-            meta=meta,
-            record={
-                "sessionId": record.session_id,
-                "marks": record.marks_as_list(),
-            },
-            artifacts=[str(path) for path in artifact_files],
-            metrics_summary=metrics_summary,
-            integrity=integrity,
-            series=report_module.series_from_artifacts(artifacts_dir),
-            # events 先置空，事件入库后在落盘前回填（见下方）
-            events=[],
-        )
-
-        store = self.store
-        store.record_session(
-            {
-                "run_id": run_id,
-                "solo_session_id": record.session_id,
-                "serial": self.serial,
-                "device_profile": self.device_profile,
-                "target": target,
-                "items": list(items),
-                "started_at": record.started_at,
-                "stopped_at": record.stopped_at,
-                "duration_s": record.duration_s,
-                "host_run_id": host_run_id,
-                "status": "stopped",
-                "run_dir": str(run_dir),
-            }
-        )
-        store.record_metrics(run_id, merged_aggregates)
-        store.record_run_artifacts(run_id, [str(artifacts_dir), str(run_dir)])
-        for degraded in supplement_info.get("degraded", []):
-            store.record_event(
-                run_id,
-                kind="supplement_degraded",
-                detail={
-                    "key": degraded["key"],
-                    "reason": degraded["reason"],
-                    "rounds": supplement_info.get("rounds"),
-                    "errors": supplement_info.get("errors"),
-                },
-            )
-        # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
-        for event in watch_events:
-            store.record_event(
-                run_id, kind=event["kind"], detail=event["detail"], ts=event["ts"]
-            )
-        for warning in watch_warnings:
-            store.record_event(run_id, kind="logwatch_warning", detail=dict(warning))
-        if integrity_report is not None and not integrity_report.ok:
-            reason = (
-                "row_count_probe_failed" if integrity_report.probe_error else "row_count_mismatch"
-            )
-            store.record_event(
-                run_id,
-                kind="integrity_warning",
-                detail={
-                    "reason": reason,
-                    "deviceDir": remote_dir,
-                    "deviceDirKept": not device_removed,
-                    "mismatches": integrity_report.mismatches,
-                    "probeError": integrity_report.probe_error,
-                },
-            )
-            logger.warning(
-                "run %s pull 完整性异常（%s），设备端目录保留: %s",
-                run_id,
-                reason,
-                remote_dir,
-            )
-
-        # 本地数据保留（可配置）：仅清理本组件 run 目录，失败不阻断采集闭环
-        try:
-            collector.enforce_retention(
-                self.runs_dir,
-                store,
-                keep_runs=self.keep_runs,
-                keep_days=self.keep_days,
-            )
-        except Exception:  # noqa: BLE001 - 清理失败只告警
-            logger.exception("本地保留策略清理失败")
-
-        # 报告最后落盘：events 已入库，随 run 数据返回供报告时间轴渲染
-        report_data["events"] = store.fetch_events(run_id)
-        report_module.write_report(run_dir, report_data)
-        report_module.write_html(run_dir, report_data)
-        return report_data
+        return scope.finalize()
 
     def _start_crash_watch(self, target: str, warnings: list[dict[str, Any]]) -> Any | None:
         """采集期间启动 crash/ANR 旁路监听；启动失败只告警，不阻断采集闭环。"""

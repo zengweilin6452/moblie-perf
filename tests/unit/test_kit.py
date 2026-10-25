@@ -551,6 +551,7 @@ def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path
     )
 
     assert probe.borrows == [
+        ("749622c9", "mobile_perf.foreground"),  # 前台守卫：start 前记录基线
         ("749622c9", "mobile_perf.start"),
         ("749622c9", "mobile_perf.clock"),  # 无巡检结论时补采对时短借用
         ("749622c9", "mobile_perf.stop_pull"),
