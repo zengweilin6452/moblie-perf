@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import adb as adb_module
 from . import metrics as metrics_module
+from .adb import default_call_device
 
 TEMPERATURE_RE = re.compile(r"temperature:\s*(-?\d+)", re.IGNORECASE)
 
@@ -71,15 +71,6 @@ DEFAULT_INTERVAL_S = 2.0
 SHELL_TIMEOUT_S = 10.0
 
 DeviceCaller = Callable[..., Any]  # call_device(args, timeout_s) -> .stdout/.returncode
-
-
-def default_call_device(adb_path: str) -> DeviceCaller:
-    """默认 adb 调用：每轮一条独立短命令（与 keeper 同构，不经 gate）。"""
-
-    def call(args: list[str], timeout_s: float = SHELL_TIMEOUT_S) -> Any:
-        return adb_module._adb_runner([adb_path, *args], timeout_s)
-
-    return call
 
 
 @dataclass
@@ -251,37 +242,12 @@ def write_supplement_csv(path: str | Path, samples: list[dict[str, Any]]) -> Pat
     return path
 
 
-def _percentile(sorted_values: list[float], ratio: float) -> float:
-    """线性插值百分位（与 collector._percentile 同口径；collector 不在本票边界内）。"""
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    rank = ratio * (len(sorted_values) - 1)
-    lower = int(rank)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    fraction = rank - lower
-    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
-
-
 def aggregate_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把补采样本聚合成 store.record_metrics 可吃的行；无样本的指标不产出行。"""
     aggregates: list[dict[str, Any]] = []
     for key in SAMPLE_KEYS:
-        values = sorted(sample[key] for sample in samples if sample.get(key) is not None)
+        values = [sample[key] for sample in samples if sample.get(key) is not None]
         if not values:
             continue
-        spec = metrics_module.METRICS[key]
-        count = len(values)
-        aggregates.append(
-            {
-                "metric_key": key,
-                "unit": spec.unit,
-                "source": spec.source,
-                "min": values[0],
-                "median": _percentile(values, 0.5),
-                "mean": sum(values) / count,
-                "max": values[-1],
-                "p90": _percentile(values, 0.9),
-                "sample_count": count,
-            }
-        )
+        aggregates.append(metrics_module.aggregate_row(key, values))
     return aggregates

@@ -77,3 +77,37 @@ def test_pc_supplement_and_pending_metrics_have_no_solo_column():
 def test_every_metric_has_bilingual_labels_and_unit():
     for spec in metrics.METRICS.values():
         assert spec.label_zh and spec.label_en and spec.unit
+
+
+def test_aggregate_row_computes_min_median_mean_max_p90():
+    """聚合行组装唯一定义于 metrics：collector 与 supplement 共用同一实现。"""
+    row = metrics.aggregate_row("mem_pss_mb", [30.0, 10.0, 20.0])
+
+    assert row["metric_key"] == "mem_pss_mb"
+    assert row["unit"] == "MB"
+    assert row["source"] == "solo_pi"
+    assert row["min"] == 10.0
+    assert row["median"] == 20.0
+    assert row["mean"] == 20.0
+    assert row["max"] == 30.0
+    assert row["p90"] == 28.0  # 线性插值：20 + (30-20)*0.8
+    assert row["sample_count"] == 3
+
+
+def test_percentile_linear_interpolation_matches_numpy_default():
+    assert metrics.percentile([1.0], 0.9) == 1.0
+    assert metrics.percentile([10.0, 20.0, 30.0, 40.0], 0.5) == 25.0
+    assert metrics.percentile([10.0, 20.0], 0.9) == 19.0
+
+
+def test_collector_and_supplement_share_metrics_aggregate_row():
+    import inspect
+
+    from mobile_perf import collector, supplement
+
+    collector_src = inspect.getsource(collector.aggregate_artifacts)
+    supplement_src = inspect.getsource(supplement.aggregate_samples)
+    assert "aggregate_row" in collector_src
+    assert "aggregate_row" in supplement_src
+    assert "_percentile" not in collector_src
+    assert "_percentile" not in supplement_src

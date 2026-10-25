@@ -154,3 +154,35 @@ def column_to_metric(column: str) -> MetricSpec | None:
         if column.startswith(prefix) and column.endswith(suffix):
             return shape_spec
     return None
+
+
+def percentile(sorted_values: list[float], ratio: float) -> float:
+    """线性插值百分位（与 numpy 默认 percentile 一致）；输入须已升序。"""
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = ratio * (len(sorted_values) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    fraction = rank - lower
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
+
+
+def aggregate_row(metric_key: str, values: list[float]) -> dict:
+    """把一组样本聚合成 store.record_metrics 可吃的行（min/median/mean/max/p90）。
+
+    全组件唯一的聚合行组装（collector 的 CSV 聚合与 supplement 的样本聚合共用）。
+    """
+    ordered = sorted(values)
+    count = len(ordered)
+    spec = METRICS[metric_key]
+    return {
+        "metric_key": metric_key,
+        "unit": spec.unit,
+        "source": spec.source,
+        "min": ordered[0],
+        "median": percentile(ordered, 0.5),
+        "mean": sum(ordered) / count,
+        "max": ordered[-1],
+        "p90": percentile(ordered, 0.9),
+        "sample_count": count,
+    }

@@ -56,7 +56,8 @@ def resolve_adb(
     return bundled
 
 
-def _adb_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+def adb_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+    """公共 adb 子进程 runner：全组件默认设备通道的底层（keeper/supplement 复用）。"""
     return subprocess.run(  # noqa: S603 - 命令由组件自身组装
         cmd,
         capture_output=True,
@@ -66,6 +67,23 @@ def _adb_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess
         timeout=timeout_s,
         check=False,
     )
+
+
+# 旧名别名：device 测试与既有调用方仍引用 _adb_runner
+_adb_runner = adb_runner
+
+
+def default_call_device(
+    adb_path: str, *, runner: Runner | None = None, default_timeout_s: float = 15.0
+) -> Runner:
+    """默认 adb 调用：args 为 adb 可执行文件之后的完整参数（全组件唯一定义）。"""
+
+    def call(args: list[str], timeout_s: float | None = None) -> object:
+        return (runner or adb_runner)(
+            [adb_path, *args], default_timeout_s if timeout_s is None else timeout_s
+        )
+
+    return call
 
 
 def list_devices(adb_path: str, runner: Runner | None = None, timeout_s: float = 15.0) -> list[str]:

@@ -48,3 +48,34 @@ def test_env_var_pointing_to_missing_file_fails_fast(tmp_path, monkeypatch):
 
     with pytest.raises(AdbResolutionError, match="nope.exe"):
         resolve_adb(None)
+
+
+def test_public_adb_runner_delegates_cmd_and_timeout():
+    from mobile_perf import adb
+
+    recorded = {}
+
+    def fake_runner(cmd, timeout_s):
+        recorded["cmd"] = cmd
+        recorded["timeout_s"] = timeout_s
+        return "result"
+
+    call = adb.default_call_device("adb.exe", runner=fake_runner)
+
+    assert call(["devices"], 5.0) == "result"
+    assert recorded["cmd"] == ["adb.exe", "devices"]
+    assert recorded["timeout_s"] == 5.0
+
+
+def test_default_call_device_single_definition_shared_by_modules():
+    """keeper/supplement 的 default_call_device 与 adb 公共定义同一对象（无第二份实现）。"""
+    from mobile_perf import adb, keeper, supplement
+
+    assert keeper.default_call_device is adb.default_call_device
+    assert supplement.default_call_device is adb.default_call_device
+
+
+def test_private_runner_alias_kept_for_device_tests():
+    from mobile_perf import adb
+
+    assert adb._adb_runner is adb.adb_runner

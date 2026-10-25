@@ -69,17 +69,6 @@ def validate_artifacts(artifacts_dir: str | Path) -> list[Path]:
     return csv_files
 
 
-def _percentile(sorted_values: list[float], ratio: float) -> float:
-    """线性插值百分位（与 numpy 默认 percentile 一致）。"""
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    rank = ratio * (len(sorted_values) - 1)
-    lower = int(rank)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    fraction = rank - lower
-    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
-
-
 def _read_metric_values(csv_path: Path) -> dict[str, list[float]]:
     """把单个 CSV 按指标字典拆成 {canonical key: 值列表}；字典外列跳过。"""
     values: dict[str, list[float]] = {}
@@ -125,23 +114,7 @@ def aggregate_artifacts(artifacts_dir: str | Path) -> list[dict[str, Any]]:
 
     aggregates: list[dict[str, Any]] = []
     for key in sorted(samples):
-        spec = metrics_module.METRICS[key]
-        values = sorted(samples[key])
-        count = len(values)
-        mean = sum(values) / count
-        aggregates.append(
-            {
-                "metric_key": key,
-                "unit": spec.unit,
-                "source": spec.source,
-                "min": values[0],
-                "median": _percentile(values, 0.5),
-                "mean": mean,
-                "max": values[-1],
-                "p90": _percentile(values, 0.9),
-                "sample_count": count,
-            }
-        )
+        aggregates.append(metrics_module.aggregate_row(key, samples[key]))
     return aggregates
 
 

@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from . import adb, solo
+from . import solo
+from .adb import default_call_device
 
 # SoloPi 无障碍服务的类路径片段。真机（749622c9）dumpsys 的 Enabled services
 # 行显示运行时组件为 com.alipay.hulu/com.alipay.hulu.shared.event.accessibility.
@@ -213,16 +214,7 @@ def is_tcp_serial(serial: str) -> bool:
     return bool(TCP_SERIAL_RE.match(serial))
 
 
-# ---------- 默认设备通道（经 gate 借用后由 kit/CLI 包装调用） ----------
-
-
-def default_call_device(adb_path: str) -> DeviceCaller:
-    """默认 adb 调用：args 为 adb 可执行文件之后的完整参数。"""
-
-    def call(args: list[str], timeout_s: float = SHELL_TIMEOUT_S) -> Any:
-        return adb._adb_runner([adb_path, *args], timeout_s)
-
-    return call
+# ---------- 默认设备通道（公共定义唯一定于 adb 模块，此处再导出供既有调用方） ----------
 
 
 def default_run_doctor(
