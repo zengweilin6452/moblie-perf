@@ -12,6 +12,7 @@ import os
 import sys
 
 from .adb import first_online_device, resolve_adb
+from .gate import FileLockGate, GateBusyError
 from .kit import CollectError, PerfKit
 
 DEFAULT_ITEMS = "CPU,Memory"  # 不含 FPS：FPS 每次启动弹告知框，无人值守不可用
@@ -63,7 +64,12 @@ def _run_doctor(args: argparse.Namespace) -> int:
     if not serial:
         print("[mobile-perf] 未找到在线设备，请用 --serial 指定", file=sys.stderr)
         return 1
-    result = solo.doctor(adb_path, serial)
+    try:
+        with FileLockGate().borrow(serial, purpose="mobile_perf.doctor"):
+            result = solo.doctor(adb_path, serial)
+    except GateBusyError as exc:
+        print(f"[mobile-perf] 设备忙: {exc}", file=sys.stderr)
+        return 1
     print(json.dumps(result.data, ensure_ascii=False, indent=2))
     return 0 if result.success else 1
 
@@ -99,6 +105,9 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)
+        return 1
+    except GateBusyError as exc:
+        print(f"[mobile-perf] 设备忙: {exc}", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(f"[mobile-perf] collect 参数错误: {exc}", file=sys.stderr)

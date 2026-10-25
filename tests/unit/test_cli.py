@@ -194,3 +194,94 @@ def test_cli_module_entry_point_exists():
     from mobile_perf import __main__
 
     assert __main__.main is cli.main
+
+
+class StubGate:
+    """替身 gate：记录借用并放行。"""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self.borrows = []
+        StubGate.instances.append(self)
+
+    def borrow(self, serial, *, purpose, timeout_s=10.0):
+        self.borrows.append((serial, purpose))
+
+        class Token:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, *exc):
+                return False
+
+        return Token()
+
+
+class BusyGate(StubGate):
+    def borrow(self, serial, *, purpose, timeout_s=10.0):
+        from mobile_perf.gate import GateBusyError
+
+        raise GateBusyError(f"设备 {serial} 正被其他进程占用（purpose={purpose}）")
+
+
+def test_doctor_borrows_gate_around_harness_doctor(tmp_path, monkeypatch):
+    import types
+
+    import mobile_perf.solo as solo_module
+
+    calls = []
+    monkeypatch.setattr(
+        solo_module,
+        "doctor",
+        lambda adb_path, serial: calls.append((adb_path, serial))
+        or types.SimpleNamespace(data={"ok": True}, success=True),
+    )
+    StubGate.instances = []
+    monkeypatch.setattr(cli, "FileLockGate", StubGate)
+
+    exit_code = cli.main(
+        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+    )
+
+    assert exit_code == 0
+    assert StubGate.instances[0].borrows == [("749622c9", "mobile_perf.doctor")]
+    assert calls and calls[0][1] == "749622c9"
+
+
+def test_doctor_gate_busy_fails_fast_with_nonzero_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "FileLockGate", BusyGate)
+
+    exit_code = cli.main(
+        ["doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+    )
+
+    assert exit_code == 1
+
+
+def test_collect_gate_busy_fails_fast_with_nonzero_exit(tmp_path, monkeypatch):
+    from mobile_perf.gate import GateBusyError
+
+    class BusyKit(StubKit):
+        def run_collect(self, **kwargs):
+            raise GateBusyError("设备 749622c9 正被其他进程占用")
+
+    exit_code = cli.main(
+        [
+            "collect",
+            "tv.danmaku.bili",
+            "--items",
+            "CPU",
+            "--duration",
+            "5",
+            "--serial",
+            "749622c9",
+            "--adb",
+            fake_adb(tmp_path),
+            "--runs-dir",
+            str(tmp_path / "runs"),
+        ],
+        kit_factory=lambda **kwargs: BusyKit(**kwargs),
+    )
+
+    assert exit_code == 1
