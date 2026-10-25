@@ -51,7 +51,14 @@ def main() -> int:
             [adb, "-s", args.serial, *cmd], capture_output=True, text=True, timeout=60
         ).stdout.strip()
 
-    kit = PerfKit(serial=args.serial, device_profile=args.profile)
+    profile = args.profile
+    if not profile:  # 未显式指定时按机型+OS 大版本自动构造设备档案
+        model = sh("shell", "getprop", "ro.product.model")
+        os_ver = sh("shell", "getprop", "ro.build.version.release")
+        profile = f"{model}-Android{os_ver.split('.')[0]}" if model and os_ver else None
+        print(f"== 0. 设备档案自动探测：{profile}")
+
+    kit = PerfKit(serial=args.serial, device_profile=profile)
 
     print("== 1. ensure_ready（巡检/自愈/充电/弹窗开关/时钟校准）")
     readiness = kit.ensure_ready()
@@ -126,7 +133,7 @@ def main() -> int:
 
     print("== 7. 趋势（两轮对比）")
     metric = "fps_frame"
-    print(json.dumps(kit.trend(args.package, metric, profile=args.profile),
+    print(json.dumps(kit.trend(args.package, metric, profile=profile),
                      ensure_ascii=False, indent=2, default=str))
 
     print(f"== 报告：runs/{run2['runId']}/report.html 与 report.json")
