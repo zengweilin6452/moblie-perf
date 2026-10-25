@@ -868,3 +868,33 @@ def test_judge_spec_stays_unresolved_after_facade_call(tmp_path):
 
     assert spec.baseline_data == {}
     assert spec.baseline_profile is None
+
+
+def test_kit_device_channel_single_priority_chain(tmp_path):
+    """B3：_shell/对时兜底/补采轮询共用一条设备通道（runner > device_call > 默认）。"""
+    from types import SimpleNamespace
+
+    calls = []
+
+    def device_call(args, timeout_s=15.0):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="1792895595", stderr="")
+
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=device_call)
+
+    kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-chan-1",
+        runs_dir=tmp_path / "runs",
+    )
+
+    # 对时兜底与补采轮询都经同一 device_call 通道（此前补采绕过注入直连默认）
+    assert any(
+        args == ["-s", "749622c9", "shell", "date", "+%s"] for args in calls
+    ), calls
+    assert any(
+        args[:5] == ["-s", "749622c9", "shell", "date", "+%s"] and "dumpsys" in args
+        for args in calls
+    ), calls

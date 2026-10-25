@@ -417,6 +417,22 @@ class PerfKit:
         self.foreground_restore = foreground_restore
         self._keeper: Keeper | None = None
         self.last_readiness: ReadinessReport | None = None
+        # 统一设备命令通道（B3）：_shell/对时兜底/补采轮询共用一条优先级链
+        self._channel = self._build_device_channel()
+
+    def _build_device_channel(self) -> Callable[..., Any]:
+        """设备命令通道唯一优先级链：注入 runner > 注入 device_call > 默认。"""
+        if self._adb_runner is not None:
+            adb_path = str(self.adb_path)
+            runner = self._adb_runner
+
+            def via_runner(args: list[str], timeout_s: float = 15.0) -> Any:
+                return runner([adb_path, *args], timeout_s)
+
+            return via_runner
+        if self._device_call is not None:
+            return self._device_call
+        return supplement_module.default_call_device(str(self.adb_path))
 
     @property
     def store(self) -> PerfStore:
@@ -446,12 +462,8 @@ class PerfKit:
             return action()
 
     def _shell(self, args: list[str], timeout_s: float = 15.0) -> Any:
-        """发起一次 adb shell 命令：注入 runner > 注入 device_call > supplement 默认通道。"""
-        if self._adb_runner is not None:
-            return self._adb_runner([str(self.adb_path), *args], timeout_s)
-        if self._device_call is not None:
-            return self._device_call(args, timeout_s)
-        return supplement_module.default_call_device(str(self.adb_path))(args, timeout_s)
+        """发起一次 adb shell 命令：走统一设备通道（runner > device_call > 默认）。"""
+        return self._channel(args, timeout_s)
 
     def _read_foreground_state(self) -> dict[str, Any] | None:
         """短事务读取前台状态（包名 + 组件）；读不到或命令失败返回 None。"""
@@ -663,18 +675,12 @@ class PerfKit:
 
     def _measure_clock_offset_s(self) -> float | None:
         """无巡检结论时短事务实测 device-host 时钟偏移（对时兜底，keeper 同口径）。"""
-        adb_path = str(self.adb_path)
-        runner = self._adb_runner
-
-        def raw_call(args: list[str], timeout_s: float = 10.0) -> Any:
-            if runner is not None:
-                return runner([adb_path, *args], timeout_s)
-            return supplement_module.default_call_device(adb_path)(args, timeout_s)
-
         try:
             result = self._borrowed(
                 "mobile_perf.clock",
-                lambda: raw_call(["-s", self.serial, "shell", "date", "+%s"], 10.0),
+                lambda: self._channel(
+                    ["-s", self.serial, "shell", "date", "+%s"], 10.0
+                ),
             )
             device_epoch = supplement_module.parse_device_epoch(result.stdout or "")
         except Exception:  # noqa: BLE001 - 测不到偏移就退回假设已同步
@@ -705,20 +711,13 @@ class PerfKit:
             measured = self._measure_clock_offset_s()
             offset = measured if measured is not None else 0.0
             offset_source = "measured" if measured is not None else "assumed"
-        call = None
-        if self._adb_runner is not None:
-            adb_path = str(self.adb_path)
-
-            def call(args: list[str], timeout_s: float = 10.0) -> Any:
-                return self._adb_runner([adb_path, *args], timeout_s)
-
         poller = supplement_module.SupplementPoller(
             adb_path=str(self.adb_path),
             serial=self.serial,
             interval_s=interval_s,
             clock_offset_s=offset,
             collect_temperature=not charging,
-            call_device=call,
+            call_device=self._channel,
         )
         self._supplement_offset = (offset, offset_source)
         poller.start()

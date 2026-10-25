@@ -41,7 +41,7 @@ def mobile_perf_kit(request, tmp_path_factory):
     base = tmp_path_factory.mktemp("perf-kit")
     (base / "adb.exe").write_bytes(b"x")
     ticks = iter(float(i) for i in range(10_000))
-    return PerfKit(
+    kit = PerfKit(
         adb_path=str(base / "adb.exe"),
         serial="FAKESERIAL",
         runs_dir=base / "runs",
@@ -52,6 +52,8 @@ def mobile_perf_kit(request, tmp_path_factory):
         gate=FileLockGate(base / "leases"),
         foreground_restore=False,
     )
+    yield kit
+    kit.store.close()  # 归还 SQLite 连接：Windows 下不关闭会锁 db，毒化共享 basetemp
 """
 
 _INNER_TEST = """

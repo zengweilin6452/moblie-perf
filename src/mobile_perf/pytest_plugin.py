@@ -218,7 +218,8 @@ class PerfFixture:
 def mobile_perf_kit(request: pytest.FixtureRequest):
     """组件 kit 的默认构造（宿主 conftest 同名覆盖即可整体替换）。"""
     if not request.config.getoption("--mobile-perf"):
-        return None
+        yield None
+        return
     from .kit import PerfKit
 
     config = request.config
@@ -231,9 +232,14 @@ def mobile_perf_kit(request: pytest.FixtureRequest):
     if config.getoption("--mobile-perf-db"):
         kwargs["db_path"] = config.getoption("--mobile-perf-db")
     try:
-        return PerfKit(**kwargs)
+        kit = PerfKit(**kwargs)
     except ValueError as exc:
         raise pytest.UsageError(f"--mobile-perf 配置无效:{exc}") from exc
+    yield kit
+    # 会话结束归还 SQLite 连接：Windows 下不关闭会锁住 db 文件
+    store = getattr(kit, "_store", None)
+    if store is not None:
+        store.close()
 
 
 @pytest.fixture
