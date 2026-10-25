@@ -9,13 +9,16 @@
 - 无障碍"假开启"（MIUI：设置里已开但服务未 Bound）无法代开——如实标
   needs_attention 并产生事件，由人工处理；
 - 充电时只降级不失败：Battery/温度项由编排层按 degraded_items 标 not_tested；
-- 弹窗开关确认依赖票 06 的自编译 App 通道，做成可注入 dialog_probe，默认跳过。
+- 弹窗开关确认走票 06 的自编译 App 控制面（adb forward + 本机 HTTP 读回），
+  kit 默认接线 default_dialog_probe；直接构造 Keeper 未注入时跳过。
 """
 
 from __future__ import annotations
 
+import json
 import re
 import time
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,7 +35,13 @@ SOLOPI_ACCESSIBILITY_SERVICE = "event.accessibility.AccessibilityServiceImpl"
 BATTERY_DEGRADED_ITEMS = ("Battery", "Temperature")
 
 CLOCK_OFFSET_WARN_S = 2.0
-DIALOG_PROBE_SKIPPED_REASON = "自编译 App 通道未接入（票 06），弹窗开关确认默认跳过"
+DIALOG_PROBE_SKIPPED_REASON = "未注入弹窗开关探针，跳过确认"
+
+# 自编译 App 控制面（票 06）：设备端 HTTP 服务端口与开关读回端点。
+# 读走本机 HTTP（list/get 只读）；set 只允许 ADB Scheme Activity，探针不写。
+DIALOG_PROBE_CONFIG_KEY = "KEY_SUPPRESS_INFO_DIALOG"
+DEFAULT_CONTROL_PORT = 23342
+PROBE_HTTP_TIMEOUT_S = 3.0
 
 TCP_IP_PORT = 5555
 SHELL_TIMEOUT_S = 15.0
@@ -209,6 +218,83 @@ def default_run_doctor(
 ) -> DoctorFn:
     """默认 doctor：借用 Harness 的 doctor 契约（快照版本，升级只回归 solo 模块测试）。"""
     return lambda: solo.doctor(adb_path, serial, repo_root=repo_root)
+
+
+def parse_config_get_response(body: str) -> bool | None:
+    """解析控制面 `GET /scheme/config?action=get` 响应，返回开关当前值。
+
+    响应形如 {"success": true, "config": {..., "value": true}}；非敏感 key 才
+    带 value。任何不可解析/失败响应返回 None（不猜）。
+    """
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("success") is not True:
+        return None
+    config = data.get("config")
+    if not isinstance(config, dict) or "value" not in config:
+        return None
+    value = config["value"]
+    return value if isinstance(value, bool) else None
+
+
+def _urllib_get(url: str, timeout_s: float) -> str:
+    with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def default_dialog_probe(
+    call_device: DeviceCaller,
+    serial: str,
+    *,
+    port: int = DEFAULT_CONTROL_PORT,
+    fetch: Callable[[str, float], str] | None = None,
+) -> DialogProbe:
+    """默认弹窗开关探针：adb forward 控制端口 → 本机 HTTP 读回开关值。
+
+    call_device 应为（可能经 gate 借用的）设备命令通道，forward 是探针唯一
+    的设备动作；fetch 可注入替身做无网络单测。
+    """
+
+    def probe() -> CheckResult:
+        forward = call_device(
+            ["-s", serial, "forward", f"tcp:{port}", f"tcp:{port}"]
+        )
+        if forward.returncode != 0:
+            return CheckResult(
+                "dialog_probe",
+                "fail",
+                {"error": "adb forward 失败", "stderr": (forward.stderr or "").strip()},
+            )
+        url = (
+            f"http://127.0.0.1:{port}/scheme/config"
+            f"?action=get&key={DIALOG_PROBE_CONFIG_KEY}"
+        )
+        try:
+            body = (fetch if fetch is not None else _urllib_get)(
+                url, PROBE_HTTP_TIMEOUT_S
+            )
+        except Exception as exc:  # noqa: BLE001 - 控制面不可达如实 fail
+            return CheckResult(
+                "dialog_probe",
+                "fail",
+                {"error": f"控制面 HTTP 不可达: {exc}", "port": port},
+            )
+        value = parse_config_get_response(body)
+        if value is None:
+            return CheckResult(
+                "dialog_probe",
+                "fail",
+                {"error": "控制面响应不可解析", "port": port},
+            )
+        return CheckResult(
+            "dialog_probe",
+            "ok" if value else "warn",
+            {"suppressed": value, "port": port},
+        )
+
+    return probe
 
 
 class Keeper:
@@ -419,11 +505,13 @@ __all__ = [
     "Keeper",
     "ReadinessReport",
     "default_call_device",
+    "default_dialog_probe",
     "default_run_doctor",
     "evaluate_clock_offset",
     "is_tcp_serial",
     "parse_accessibility_bound",
     "parse_battery_charging",
+    "parse_config_get_response",
     "parse_devices_stdout",
     "parse_foreground_package",
     "parse_wlan_ip",

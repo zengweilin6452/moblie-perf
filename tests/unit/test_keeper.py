@@ -5,15 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from mobile_perf import keeper as keeper_module
 from mobile_perf.gate import FileLockGate
 from mobile_perf.keeper import (
     BATTERY_DEGRADED_ITEMS,
     CheckResult,
     Keeper,
     ReadinessReport,
+    default_dialog_probe,
     evaluate_clock_offset,
     parse_accessibility_bound,
     parse_battery_charging,
+    parse_config_get_response,
     parse_devices_stdout,
     parse_foreground_package,
     parse_wlan_ip,
@@ -401,6 +404,8 @@ def make_kit(tmp_path, fake: FakeDevice, **kwargs):
         gate=RecordingGate(tmp_path / "gate-leases"),
         device_call=fake.call,
         doctor_fn=fake.doctor,
+        # 桩探针：既有 kit 用例不触真实控制面 HTTP；默认接线见 default-wiring 用例
+        dialog_probe=lambda: CheckResult("dialog_probe", "skipped", {"reason": "unit"}),
     )
     defaults.update(kwargs)
     return PerfKit(**defaults)
@@ -458,3 +463,107 @@ def test_ensure_ready_unparseable_accessibility_is_fail(tmp_path):
     accessibility = next(c for c in report.checks if c.name == "accessibility")
     assert accessibility.status == "fail"
     assert report.ok is False
+
+
+# ---------- 弹窗开关探针：控制面读回（票 06 自编译 App 通道） ----------
+
+CONFIG_GET_TRUE = (
+    '{"success":true,"config":{"key":"KEY_SUPPRESS_INFO_DIALOG","type":"boolean",'
+    '"description":"告知型权限弹窗本机不再提示","default":false,"writable":true,'
+    '"sensitive":false,"redacted":false,"value":true}}'
+)
+
+
+def test_parse_config_get_response_true():
+    assert parse_config_get_response(CONFIG_GET_TRUE) is True
+
+
+def test_parse_config_get_response_false():
+    body = CONFIG_GET_TRUE.replace('"value":true', '"value":false')
+    assert parse_config_get_response(body) is False
+
+
+def test_parse_config_get_response_unparseable_returns_none():
+    assert parse_config_get_response("not json") is None
+    assert parse_config_get_response('{"success":false,"errorCode":"unsupported_config"}') is None
+    assert parse_config_get_response("") is None
+
+
+def test_default_dialog_probe_ok_when_suppressed():
+    commands = []
+
+    def call(args, timeout_s=15.0):
+        commands.append(list(args))
+        return make_result("", returncode=0)
+
+    probe = default_dialog_probe(call, "749622c9", fetch=lambda url, t: CONFIG_GET_TRUE)
+
+    result = probe()
+
+    assert result.status == "ok"
+    assert result.detail == {"suppressed": True, "port": 23342}
+    assert commands == [["-s", "749622c9", "forward", "tcp:23342", "tcp:23342"]]
+
+
+def test_default_dialog_probe_warns_when_switch_off():
+    probe = default_dialog_probe(
+        lambda args, timeout_s=15.0: make_result(""),
+        "749622c9",
+        fetch=lambda url, t: CONFIG_GET_TRUE.replace('"value":true', '"value":false'),
+    )
+
+    result = probe()
+
+    assert result.status == "warn"
+    assert result.detail["suppressed"] is False
+
+
+def test_default_dialog_probe_fail_when_http_unreachable():
+    def fetch(url, t):
+        raise OSError("connection refused")
+
+    probe = default_dialog_probe(
+        lambda args, timeout_s=15.0: make_result(""), "749622c9", fetch=fetch
+    )
+
+    result = probe()
+
+    assert result.status == "fail"
+    assert "控制面 HTTP 不可达" in result.detail["error"]
+
+
+def test_default_dialog_probe_fail_when_forward_fails():
+    probe = default_dialog_probe(
+        lambda args, timeout_s=15.0: make_result("error: device offline", returncode=1),
+        "749622c9",
+        fetch=lambda url, t: CONFIG_GET_TRUE,
+    )
+
+    result = probe()
+
+    assert result.status == "fail"
+    assert result.detail["error"] == "adb forward 失败"
+
+
+def test_kit_default_wiring_uses_control_channel(tmp_path, monkeypatch):
+    """kit 未注入探针时默认接线：forward 经 gate 借用，HTTP 读回走 keeper 模块。"""
+    fake = FakeDevice(online_serials=["749622c9"])
+    seen_urls: list[str] = []
+
+    def fake_fetch(url, timeout_s):
+        seen_urls.append(url)
+        return CONFIG_GET_TRUE
+
+    monkeypatch.setattr(keeper_module, "_urllib_get", fake_fetch)
+    kit = make_kit(tmp_path, fake)
+    kit._dialog_probe = None  # 摘掉桩，走默认接线
+
+    report = kit.ensure_ready()
+
+    dialog = next(c for c in report.checks if c.name == "dialog_probe")
+    assert dialog.status == "ok"
+    assert dialog.detail["suppressed"] is True
+    assert seen_urls == [
+        "http://127.0.0.1:23342/scheme/config?action=get&key=KEY_SUPPRESS_INFO_DIALOG"
+    ]
+    assert ["-s", "749622c9", "forward", "tcp:23342", "tcp:23342"] in fake.commands

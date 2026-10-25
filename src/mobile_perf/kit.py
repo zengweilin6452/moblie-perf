@@ -177,20 +177,26 @@ class PerfKit:
         入库由持有 store 的编排层完成。
         """
         if self._keeper is None:
-            from .keeper import default_call_device, default_run_doctor
+            from .keeper import default_call_device, default_dialog_probe, default_run_doctor
 
             raw_call = self._device_call or default_call_device(str(self.adb_path))
             raw_doctor = self._doctor_fn or default_run_doctor(
                 str(self.adb_path), self.serial, repo_root=str(self._repo_root)
             )
+            def borrowed_call(args, timeout_s=15.0):
+                return self._borrowed(
+                    KEEPER_BORROW_PURPOSE, lambda: raw_call(args, timeout_s)
+                )
             self._keeper = Keeper(
                 adb_path=str(self.adb_path),
                 serial=self.serial,
-                call_device=lambda args, timeout_s=15.0: self._borrowed(
-                    KEEPER_BORROW_PURPOSE, lambda: raw_call(args, timeout_s)
-                ),
+                call_device=borrowed_call,
                 run_doctor=lambda: self._borrowed(KEEPER_BORROW_PURPOSE, raw_doctor),
-                dialog_probe=self._dialog_probe,
+                # 未注入时默认接真实弹窗开关探针：forward 与其他巡检动作一样走
+                # 短事务借用（ADR-0001），HTTP 读回在本机侧完成
+                dialog_probe=self._dialog_probe or default_dialog_probe(
+                    borrowed_call, self.serial
+                ),
             )
         report = self._keeper.run()
         self.last_readiness = report
