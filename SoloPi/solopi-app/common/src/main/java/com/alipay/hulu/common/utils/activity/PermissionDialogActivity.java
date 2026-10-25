@@ -526,6 +526,12 @@ public class PermissionDialogActivity extends Activity implements View.OnClickLi
      * @return
      */
     private boolean processToastPermission(GroupPermission permissionG) {
+        // 本机不再提示：开关开启时告知型弹窗整体跳过（可经 config Scheme 读写）
+        if (SPService.getBoolean(SPService.KEY_SUPPRESS_INFO_DIALOG, false)) {
+            LogUtil.i(TAG, "告知型弹窗已被本机不再提示开关跳过");
+            return true;
+        }
+
         List<String> permissions = permissionG.permissions;
         final List<String> real = new ArrayList<>(permissions.size() + 1);
         final List<String> sources = new ArrayList<>();
@@ -584,6 +590,9 @@ public class PermissionDialogActivity extends Activity implements View.OnClickLi
 
         permissions.addAll(toasts);
         SPService.put(HANDLED_PERMISSIONS, permissions);
+
+        // 用户选择"不再提示"即视为本机不再提示全部告知型弹窗
+        SPService.putBoolean(SPService.KEY_SUPPRESS_INFO_DIALOG, true);
     }
 
     /**

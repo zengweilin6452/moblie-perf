@@ -65,6 +65,9 @@ public class SPService {
     public static final String KEY_USE_EASY_MODE = "KEY_USE_EASY_MODE";
     public static final String KEY_EASY_MODE_NOTIFY_TIME = "KEY_EASY_MODE_NOTIFY_TIME";
 
+    public static final String KEY_SUPPRESS_INFO_DIALOG = "KEY_SUPPRESS_INFO_DIALOG";
+    public static final String KEY_CSV_ENGLISH_NAME = "KEY_CSV_ENGLISH_NAME";
+
     private static SharedPreferences preferences;
 
     public static void init(Context context) {

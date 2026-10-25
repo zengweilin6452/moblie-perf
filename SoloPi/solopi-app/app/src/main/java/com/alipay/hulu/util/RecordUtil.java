@@ -22,6 +22,7 @@ import com.alipay.hulu.common.utils.DeviceInfoUtil;
 import com.alipay.hulu.common.utils.FileUtils;
 import com.alipay.hulu.common.utils.HttpUtil;
 import com.alipay.hulu.common.utils.LogUtil;
+import com.alipay.hulu.common.utils.StringUtil;
 import com.alipay.hulu.shared.display.items.base.RecordPattern;
 
 import org.apache.commons.io.Charsets;
@@ -174,10 +175,7 @@ public class RecordUtil {
                 + String.valueOf(pattern.getSource()) + "\u0000"
                 + String.valueOf(pattern.getUnit()) + "\u0000"
                 + pattern.getStartTime() + "\u0000" + pattern.getEndTime();
-        String fileName = safeFilePart(pattern.getName()) + "_"
-                + safeFilePart(pattern.getSource()) + "_"
-                + stableFileSuffix(identity) + "_"
-                + pattern.getStartTime() + "_" + pattern.getEndTime() + ".csv";
+        String fileName = buildRecordFileName(pattern, identity);
         File saveFile = new File(folder, fileName);
         if (!saveFile.createNewFile()) {
             throw new IOException("Duplicate performance record file: " + fileName);
@@ -202,6 +200,84 @@ public class RecordUtil {
                 writer.close();
             }
         }
+    }
+
+    /**
+     * 英文文件名映射（前缀对：中文指标名前缀 → 英文名），开启 KEY_CSV_ENGLISH_NAME 后生效。
+     * 未命中的中文指标名退回来源名，唯一性由稳定后缀保证；CSV 列名不随此开关变化。
+     */
+    private static final String[] ENGLISH_NAME_PREFIXES = {
+            "累计全局下行流量", "net_rx_total",
+            "累计全局上行流量", "net_tx_total",
+            "全局下行速率", "net_rx_speed",
+            "全局上行速率", "net_tx_speed",
+            "最长延迟时间", "frame_delay_max",
+            "延迟占比", "frame_delay_ratio",
+            "延迟次数", "frame_delay_count",
+            "实时功率", "battery_power",
+            "平均功率", "battery_power_avg",
+            "实时电流", "battery_current",
+            "平均电流", "battery_current_avg",
+            "PrivateDirty-", "privatedirty-",
+            "应用进程", "app_process",
+            "PSS-", "pss-",
+            "全局占用", "global_usage",
+            "CPU温度", "cpu_temperature",
+            "响应耗时", "response_time",
+            "刷新耗时", "refresh_time",
+            "帧率", "fps",
+    };
+
+    private static String buildRecordFileName(RecordPattern pattern, String identity)
+            throws IOException {
+        String name;
+        if (SPService.getBoolean(SPService.KEY_CSV_ENGLISH_NAME, false)) {
+            name = asciiFilePart(englishRecordName(pattern));
+            if (StringUtil.isEmpty(name)) {
+                name = safeFilePart(pattern.getSource());
+            }
+        } else {
+            name = safeFilePart(pattern.getName());
+        }
+        return name + "_"
+                + safeFilePart(pattern.getSource()) + "_"
+                + stableFileSuffix(identity) + "_"
+                + pattern.getStartTime() + "_" + pattern.getEndTime() + ".csv";
+    }
+
+    private static String englishRecordName(RecordPattern pattern) {
+        String name = String.valueOf(pattern.getName());
+        for (int i = 0; i + 1 < ENGLISH_NAME_PREFIXES.length; i += 2) {
+            String prefix = ENGLISH_NAME_PREFIXES[i];
+            if (name.startsWith(prefix)) {
+                return ENGLISH_NAME_PREFIXES[i + 1] + asciiFilePart(name.substring(prefix.length()));
+            }
+        }
+        return asciiFilePart(name);
+    }
+
+    /**
+     * 只保留 ASCII 可见字符的文件片段，非 ASCII 连续段折叠为单个下划线
+     */
+    private static String asciiFilePart(String value) {
+        if (value == null || value.length() == 0) {
+            return "";
+        }
+        StringBuilder result = new StringBuilder(Math.min(value.length(), 24));
+        for (int i = 0; i < value.length() && result.length() < 24; i++) {
+            char character = value.charAt(i);
+            if (character > 32 && character < 127
+                    && character != '/' && character != '\\' && character != ':') {
+                result.append(character);
+            } else if (result.length() > 0 && result.charAt(result.length() - 1) != '_') {
+                result.append('_');
+            }
+        }
+        int end = result.length();
+        if (end > 0 && result.charAt(end - 1) == '_') {
+            end--;
+        }
+        return result.substring(0, end);
     }
 
     private static String safeFilePart(String value) {

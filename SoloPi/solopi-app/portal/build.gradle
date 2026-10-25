@@ -52,7 +52,7 @@ android {
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            versionNameSuffix "-" + new Date().format("yyMMddHHmm")
+            // 单活线（ADR-0003）：debug 构建不带时间戳后缀，保证版本号可判定
         }
     }
 

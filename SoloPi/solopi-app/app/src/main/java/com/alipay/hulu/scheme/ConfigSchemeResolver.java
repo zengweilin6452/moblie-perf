@@ -115,6 +115,8 @@ public class ConfigSchemeResolver implements SchemeActionResolver {
         add(result, KEY_CHECK_UPDATE, TYPE_BOOLEAN, "启动时检查更新", true, true, null, null);
         add(result, KEY_ADB_SERVER, TYPE_STRING, "SoloPi 内部 ADB 地址", "localhost:5555", false, null, null);
         add(result, KEY_HIDE_LOG, TYPE_BOOLEAN, "日志隐藏节点敏感信息", true, true, null, null);
+        add(result, KEY_SUPPRESS_INFO_DIALOG, TYPE_BOOLEAN, "告知型权限弹窗本机不再提示", false, true, null, null);
+        add(result, KEY_CSV_ENGLISH_NAME, TYPE_BOOLEAN, "性能 CSV 落盘文件名使用英文（列名保持中文）", false, true, null, null);
         add(result, KEY_SCREEN_FACTOR_ROTATION, TYPE_INT,
                 "默认屏幕方向索引：0/1/2/3（对应 0/90/180/270 度）", 0, true, 0L, 3L);
         add(result, KEY_SCREEN_ROTATION, TYPE_BOOLEAN, "交换屏幕坐标轴", false, true, null, null);
