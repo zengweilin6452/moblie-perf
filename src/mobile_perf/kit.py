@@ -8,9 +8,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import collector, solo, supplement as supplement_module
+from . import collector, solo
 from . import metrics as metrics_module
 from . import report as report_module
+from . import supplement as supplement_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
 from .keeper import Keeper, ReadinessReport

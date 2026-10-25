@@ -651,7 +651,6 @@ class TestRunCollectSupplement:
         assert "temp_battery_c" not in rows
 
     def test_charging_degrades_temperature_polling(self, tmp_path):
-        import time as time_module
 
         adb = FakeSupplementAdb()
         store = PerfStore(tmp_path / "data" / "mobile_perf.db")

@@ -301,3 +301,49 @@ def test_series_from_artifacts_absorbs_supplement_csv_on_elapsed_axis(tmp_path):
     assert series["temp_battery_c"]["unit"] == "°C"
     assert series["temp_battery_c"]["points"] == [[0.0, 28.0], [2.0, 28.1]]
     assert series["gpu_util_pct"]["points"] == [[2.0, 40.0]]
+
+
+def _series_for_combined(*keys):
+    pool = {
+        "fps_frame": {
+            "unit": "fps", "source": "solo_pi", "labelZh": "帧率", "points": [[0.0, 60.0]],
+        },
+        "temp_battery_c": {
+            "unit": "°C", "source": "pc_supplement", "labelZh": "电池温度", "points": [[0.0, 28.0]],
+        },
+        "gpu_util_pct": {
+            "unit": "%", "source": "pc_supplement", "labelZh": "GPU占用", "points": [[0.0, 30.0]],
+        },
+    }
+    return {key: pool[key] for key in keys}
+
+
+def test_write_html_renders_thermal_fps_combined_chart(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        series=_series_for_combined("fps_frame", "temp_battery_c", "gpu_util_pct"),
+    )
+
+    path = report.write_html(tmp_path, built)
+    html = path.read_text(encoding="utf-8")
+
+    assert 'id="chart-combined-thermal-fps"' in html
+    assert "温度-帧率同图" in html
+    # 同图脚本同时引用帧率与补采曲线
+    assert "fps_frame" in html and "temp_battery_c" in html and "gpu_util_pct" in html
+
+
+def test_write_html_without_supplement_series_has_no_combined_chart(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        series=_series_for_combined("fps_frame"),
+    )
+
+    path = report.write_html(tmp_path, built)
+    html = path.read_text(encoding="utf-8")
+
+    assert 'id="chart-combined-thermal-fps"' not in html

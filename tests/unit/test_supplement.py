@@ -109,7 +109,6 @@ def make_poller(fake_call, **kwargs):
     kwargs.setdefault("serial", "749622c9")
     kwargs.setdefault("interval_s", 0.2)
     kwargs.setdefault("clock_offset_s", 1.0)
-    kwargs.setdefault("session_start_host_epoch_s", 998.0)
     kwargs.setdefault("call_device", fake_call)
     kwargs.setdefault("sleep", lambda seconds: None)
     kwargs.setdefault("now", lambda: 1000.0)
@@ -133,14 +132,17 @@ class TestSupplementPoller:
 
     def test_samples_land_on_unified_timeline(self):
         call = FakeCallDevice(
-            [combined_output(999, temperature=280, gpu=30), combined_output(1001, temperature=281, gpu=40)]
+            [
+                combined_output(999, temperature=280, gpu=30),
+                combined_output(1001, temperature=281, gpu=40),
+            ]
         )
         poller = make_poller(call)
         poller.start()
         assert wait_until(lambda: poller.rounds == 2)
         result = poller.stop()
 
-        assert [s["elapsed_s"] for s in result.samples] == [2.0, 4.0]
+        assert [s["elapsed_s"] for s in result.samples] == [0.0, 2.0]
         assert [s["temp_battery_c"] for s in result.samples] == [28.0, 28.1]
         assert [s["gpu_util_pct"] for s in result.samples] == [30.0, 40.0]
         assert [s["device_epoch_s"] for s in result.samples] == [999.0, 1001.0]
