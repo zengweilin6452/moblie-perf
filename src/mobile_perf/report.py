@@ -51,6 +51,7 @@ def series_from_artifacts(artifacts_dir: str | Path) -> dict[str, Any]:
         spec = metrics_module.METRICS[key]
         series[key] = {
             "unit": spec.unit,
+            "source": spec.source,
             "labelZh": spec.label_zh,
             "labelEn": spec.label_en,
             "points": _downsample(points),
@@ -68,14 +69,20 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
         keyed: list[tuple[int, str]] = []
         time_index: int | None = None
         simple_index: int | None = None
+        elapsed_index: int | None = None
         for index, name in enumerate(header):
             name = name.strip()
             if name == "RecordTime":
                 time_index = index
             elif name == "SimpleTime":
                 simple_index = index
+            elif name == "elapsed_s":
+                # 补采 CSV（supplement.py）：统一时间轴秒列
+                elapsed_index = index
             else:
                 spec = metrics_module.column_to_metric(name)
+                if spec is None and name in metrics_module.METRICS:
+                    spec = metrics_module.METRICS[name]  # 补采 CSV 用 canonical key 做列名
                 if spec is not None:
                     keyed.append((index, spec.key))
         for row in reader:
@@ -86,8 +93,9 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
                     value = float(row[index])
                 except ValueError:
                     continue
-                x_ms = _row_time_ms(row, time_index, simple_index)
-                t0, points = curves.setdefault(key, (x_ms, []))
+                x_ms = _row_time_ms(row, time_index, simple_index, elapsed_index)
+                # elapsed 轴已是相对秒，基准恒为 0（空值行不移动零点）
+                t0, points = curves.setdefault(key, (0.0 if elapsed_index is not None else x_ms, []))
                 if t0 is None:
                     t0 = x_ms
                     curves[key] = (t0, points)
@@ -97,7 +105,17 @@ def _absorb_csv(path: Path, curves: dict[str, tuple[float | None, list[tuple[flo
                     points.append((0.0, value))
 
 
-def _row_time_ms(row: list[str], time_index: int | None, simple_index: int | None) -> float | None:
+def _row_time_ms(
+    row: list[str],
+    time_index: int | None,
+    simple_index: int | None,
+    elapsed_index: int | None = None,
+) -> float | None:
+    if elapsed_index is not None and elapsed_index < len(row):
+        try:
+            return float(row[elapsed_index]) * 1000.0  # 补采 elapsed_s 为秒
+        except ValueError:
+            return None
     if time_index is not None and time_index < len(row):
         try:
             return float(row[time_index])  # SoloPi RecordTime 为毫秒时间戳

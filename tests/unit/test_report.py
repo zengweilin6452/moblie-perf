@@ -272,3 +272,32 @@ def test_write_report_round_trip(tmp_path):
 
     assert path == tmp_path / "report.json"
     assert json.loads(path.read_text(encoding="utf-8"))["runId"] == "run-x"
+
+
+def test_series_entries_carry_metric_source(tmp_path):
+    _write_csv(
+        tmp_path / "artifacts" / "performance.csv",
+        ["RecordTime,PSS-main-18390(MB),SimpleTime", "1000,10.0,0"],
+    )
+
+    series = report.series_from_artifacts(tmp_path / "artifacts")
+
+    assert series["mem_pss_mb"]["source"] == "solo_pi"
+
+
+def test_series_from_artifacts_absorbs_supplement_csv_on_elapsed_axis(tmp_path):
+    _write_csv(
+        tmp_path / "artifacts" / "supplement_thermal_gpu.csv",
+        [
+            "elapsed_s,temp_battery_c,gpu_util_pct",
+            "0.0,28.0,",
+            "2.0,28.1,40.0",
+        ],
+    )
+
+    series = report.series_from_artifacts(tmp_path / "artifacts")
+
+    assert series["temp_battery_c"]["source"] == "pc_supplement"
+    assert series["temp_battery_c"]["unit"] == "°C"
+    assert series["temp_battery_c"]["points"] == [[0.0, 28.0], [2.0, 28.1]]
+    assert series["gpu_util_pct"]["points"] == [[2.0, 40.0]]
