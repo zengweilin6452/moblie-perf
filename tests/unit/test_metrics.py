@@ -111,3 +111,25 @@ def test_collector_and_supplement_share_metrics_aggregate_row():
     assert "aggregate_row" in supplement_src
     assert "_percentile" not in collector_src
     assert "_percentile" not in supplement_src
+
+
+def test_degraded_metric_keys_maps_charging_items_to_canonical_keys():
+    """A1：充电降级采集项 → canonical key 集合（Battery 全族 + 温度补采项）。"""
+    keys = metrics.degraded_metric_keys(("Battery", "Temperature"))
+
+    assert keys == {
+        "battery_pct",
+        "battery_current_ma",
+        "battery_current_avg_ma",
+        "battery_power_mw",
+        "battery_power_avg_mw",
+        "temp_battery_c",
+    }
+    assert metrics.degraded_metric_keys(()) == set()
+    assert metrics.degraded_metric_keys(("Battery",)) == {
+        "battery_pct",
+        "battery_current_ma",
+        "battery_current_avg_ma",
+        "battery_power_mw",
+        "battery_power_avg_mw",
+    }

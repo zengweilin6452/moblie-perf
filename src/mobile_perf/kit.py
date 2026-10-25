@@ -250,6 +250,13 @@ class CollectScope:
 
         merged_aggregates = aggregates + supplement_aggregates
         metrics_summary = report_module.summarize_aggregates(merged_aggregates)
+        # 充电降级（A1/§6.2）：巡检结论含 Battery/Temperature 降级项时，
+        # 对应指标标注 not_tested（附原因），其余指标照常
+        readiness = kit.last_readiness
+        if readiness is not None:
+            metrics_module.mark_not_tested(
+                metrics_summary, getattr(readiness, "degraded_items", ())
+            )
 
         meta = {
             "runId": self._run_id,

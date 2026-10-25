@@ -1055,3 +1055,41 @@ def test_run_collect_ensures_ready_and_persists_keeper_events(tmp_path):
     assert events[0]["run_id"] == "run-keeper-ev"  # keeper 事件关联到本 run
     (device_row,) = store.fetch_devices()
     assert device_row["status"] == "online"
+
+
+def test_run_collect_marks_battery_metrics_not_tested_when_charging(tmp_path):
+    """A1：充电降级——Battery 指标在 metricsSummary 标注 notTested，其余指标照常。"""
+
+    class BatteryCsvBackend(FakeHarnessBackend):
+        def stop(self, session_id, output_dir):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            rows = ["RecordTime,实时电流(mA),PSS-main-18390(MB),extra,SimpleTime"]
+            rows += [f"{1792895595000 + i},{-120 + i},{42 + i},,{i}" for i in range(3)]
+            Path(output_dir).joinpath("performance.csv").write_text(
+                "\n".join(rows) + "\n", encoding="gb18030"
+            )
+            return {
+                "success": True,
+                "state": "stopped",
+                "sessionId": session_id,
+                "artifacts": {"performance": {"localDir": str(output_dir)}},
+            }
+
+    kit = make_kit(tmp_path, BatteryCsvBackend(), device_call=charging_keeper_device_call())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["Memory", "Battery"],
+        duration_s=30.0,
+        host_run_id="run-chg-1",
+        runs_dir=tmp_path / "runs",
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["battery_current_ma"]["notTested"] is True
+    assert "充电" in summary["battery_current_ma"]["notTestedReason"]
+    assert summary["battery_current_ma"]["median"] == -119.0  # 数据照采，仅标注不测
+    assert "notTested" not in summary["mem_pss_mb"]  # 其余指标照常
+    assert json.loads(
+        (tmp_path / "runs" / "run-chg-1" / "report.json").read_text(encoding="utf-8")
+    )["metricsSummary"]["battery_current_ma"]["notTested"] is True

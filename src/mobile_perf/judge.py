@@ -115,10 +115,20 @@ def judge(report: dict[str, Any], spec: JudgeSpec) -> Verdict:
     run_id = report.get("runId")
 
     checks: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     for metric_key, (op, threshold, level) in sorted(spec.thresholds.items()):
         entry = metrics_summary.get(metric_key)
         if entry is None:
             return _not_tested(spec, f"run 缺少阈值引用的指标 {metric_key!r} 的聚合数据")
+        if entry.get("notTested"):
+            # 充电降级等编排层标注：跳过判定，证据里如实说明（§6.2）
+            skipped.append(
+                {
+                    "metricKey": metric_key,
+                    "reason": entry.get("notTestedReason") or "run 标注 not_tested，跳过判定",
+                }
+            )
+            continue
         sample_count = entry.get("sampleCount") or 0
         if sample_count < spec.effective_min_samples:
             return _not_tested(
@@ -148,7 +158,21 @@ def judge(report: dict[str, Any], spec: JudgeSpec) -> Verdict:
             }
         )
 
+    if skipped and not checks:
+        detail = "; ".join(f"{item['metricKey']}（{item['reason']}）" for item in skipped)
+        return _not_tested(spec, f"阈值指标全部标注 not_tested，无法判定: {detail}")
+
     warnings = [check for check in checks if not check["ok"] and check["level"] == "warn"]
+    warnings.extend(
+        {
+            "metricKey": item["metricKey"],
+            "notTested": True,
+            "level": "warn",
+            "ok": None,
+            "reason": item["reason"],
+        }
+        for item in skipped
+    )
     if any(not check["ok"] and check["level"] == "fail" for check in checks):
         return Verdict(
             verdict=VERDICT_FAILED, baseline=spec.baseline, checks=checks, warnings=warnings

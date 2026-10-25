@@ -235,3 +235,58 @@ def test_unknown_operator_is_rejected_at_spec_construction():
 def test_unknown_level_is_rejected_at_spec_construction():
     with pytest.raises(ValueError, match="level"):
         make_spec(thresholds={"mem_pss_mb": ("lt", 1.0, "error")})
+
+
+# ---- A1：not_tested 标注的指标跳过判定 ----
+
+def test_not_tested_metric_is_skipped_and_evidenced():
+    report = make_report(
+        metricsSummary={
+            "mem_pss_mb": {"unit": "MB", "median": 150.0, "sampleCount": 30},
+            "battery_current_ma": {
+                "unit": "mA",
+                "median": -120.0,
+                "sampleCount": 30,
+                "notTested": True,
+                "notTestedReason": "设备充电中，Battery 项降级 not_tested",
+            },
+        }
+    )
+    spec = make_spec(
+        thresholds={
+            "mem_pss_mb": ("lt", 220.0, "fail"),
+            "battery_current_ma": ("gt", -200.0, "fail"),
+        },
+        baseline_data={
+            "mem_pss_mb": {"value": 180.0, "sourceRunId": "run-baseline-src"},
+            "battery_current_ma": {"value": -150.0, "sourceRunId": "run-baseline-src"},
+        },
+    )
+
+    verdict = judge(report, spec)
+
+    assert verdict.verdict == "passed"  # 其余指标照常判定
+    assert [c["metricKey"] for c in verdict.checks] == ["mem_pss_mb"]
+    (skipped,) = [w for w in verdict.warnings if w.get("notTested")]
+    assert skipped["metricKey"] == "battery_current_ma"
+    assert "充电" in skipped["reason"]
+
+
+def test_all_threshold_metrics_not_tested_verdict_not_tested():
+    report = make_report(
+        metricsSummary={
+            "mem_pss_mb": {
+                "unit": "MB",
+                "median": 150.0,
+                "sampleCount": 30,
+                "notTested": True,
+                "notTestedReason": "设备充电中",
+            },
+        }
+    )
+
+    verdict = judge(report, make_spec())
+
+    assert verdict.verdict == "not_tested"
+    assert "not_tested" in verdict.reason and "mem_pss_mb" in verdict.reason
+    assert verdict.checks == []

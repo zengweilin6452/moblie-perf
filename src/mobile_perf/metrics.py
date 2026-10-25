@@ -156,6 +156,40 @@ def column_to_metric(column: str) -> MetricSpec | None:
     return None
 
 
+# 充电降级采集项（keeper ReadinessReport.degraded_items 的元素）到 canonical key
+# 的映射口径：Battery 覆盖全部 battery_* 指标，Temperature 对应温度补采项
+DEGRADED_ITEM_BATTERY = "Battery"
+DEGRADED_ITEM_TEMPERATURE = "Temperature"
+
+
+def degraded_metric_keys(degraded_items) -> set[str]:
+    """把巡检的充电降级采集项映射为应标注 not_tested 的 canonical key 集合（§6.2）。"""
+    items = set(degraded_items or ())
+    keys: set[str] = set()
+    if DEGRADED_ITEM_BATTERY in items:
+        keys |= {key for key in METRICS if key.startswith("battery_")}
+    if DEGRADED_ITEM_TEMPERATURE in items:
+        keys.add("temp_battery_c")
+    return keys
+
+
+def mark_not_tested(metrics_summary: dict, degraded_items) -> dict:
+    """对降级采集项对应的 metricsSummary 条目就地标注 not_tested（A1/§6.2）。
+
+    其余指标不受影响；无聚合数据的降级项自然无处标注。返回原字典便于链式使用。
+    """
+    for key in sorted(degraded_metric_keys(degraded_items)):
+        entry = metrics_summary.get(key)
+        if entry is None:
+            continue
+        item = DEGRADED_ITEM_TEMPERATURE if key == "temp_battery_c" else DEGRADED_ITEM_BATTERY
+        entry["notTested"] = True
+        entry["notTestedReason"] = (
+            f"设备充电中，巡检 degraded_items 含 {item}，该采集项降级 not_tested"
+        )
+    return metrics_summary
+
+
 def percentile(sorted_values: list[float], ratio: float) -> float:
     """线性插值百分位（与 numpy 默认 percentile 一致）；输入须已升序。"""
     if len(sorted_values) == 1:
