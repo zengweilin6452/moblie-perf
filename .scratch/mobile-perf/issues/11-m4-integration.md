@@ -4,7 +4,7 @@
 
 **Blocked by:** 08, 09
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-25，perf/ticket-11 五笔提交已合并进 mobile-perf-dev（300 unit/contract 全绿）。pytest 钩子 --mobile-perf 落地；前台专项实证：Harness doctor/perf-start/perf-stop 均会抢前台且本机 mCurrentFocus=null 使 preserve_foreground 失效 → 已用前台守卫（am start 还原 + foreground 事件入库）实现"采集前后前台不变"（真机验证通过）；xdist 同设备 fast-fail/异设备全绿，修复并发首连 WAL 排他锁缺陷。moblie-auto 工作区新增 3 文件未提交（_perf_gate.py + 2 测试）；宿主 scrcpy 缺 touch_down 是既有缺口绕过未修）
 
 - [ ] moblie-auto 仓库内用例：UI 滑动 + 采集 + 门禁结论，全程零人工干预
 - [ ] 采集命令执行前后被测应用前台状态不变（专项记录证据）
