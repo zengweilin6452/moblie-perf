@@ -4,11 +4,11 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] 分级口径经真实 CSV（tests/fixtures/solopi_csv_sample）校验，粒度限制如实记录
-- [ ] 新 canonical key 入字典入库（聚合行），unit 覆盖分桶边界
-- [ ] judge 三态 + report/trend 双语呈现
-- [ ] 若发现 SoloPi 端侧可低成本增强（现有二开位），单列建议不动手
+- [x] 分级口径经真实 CSV（tests/fixtures/solopi_csv_sample）校验，粒度限制如实记录
+- [x] 新 canonical key 入字典入库（聚合行），unit 覆盖分桶边界
+- [x] judge 三态 + report/trend 双语呈现
+- [x] 若发现 SoloPi 端侧可低成本增强（现有二开位），单列建议不动手
 
 ## Comments
