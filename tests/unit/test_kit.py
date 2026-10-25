@@ -1,7 +1,6 @@
 """PerfKit.run_collect 编排的单元测试：假后端注入，不碰 adb 与真机。"""
 
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import pytest

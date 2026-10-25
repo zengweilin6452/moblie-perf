@@ -65,7 +65,7 @@ class JudgeSpec:
     def effective_min_samples(self) -> int:
         return self.min_samples if self.min_samples is not None else DEFAULT_MIN_SAMPLES
 
-    def resolved(self, *, profile: str | None, data: dict[str, dict[str, Any]]) -> "JudgeSpec":
+    def resolved(self, *, profile: str | None, data: dict[str, dict[str, Any]]) -> JudgeSpec:
         """返回注入基线解析结果的副本（kit 门面用，JudgeSpec 本身保持宿主构造态）。"""
         return replace(self, baseline_profile=profile, baseline_data=data)
 
