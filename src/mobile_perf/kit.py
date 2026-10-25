@@ -104,9 +104,9 @@ class CollectScope:
     """交互式采集窗口（设计方案 §6.2）：with 块内宿主驱动 UI 并 mark 打标。
 
     __exit__ 无条件 finalize：宿主（如 pytest 用例）在块内失败也拿到完整
-    报告，端侧录制不会悬挂；finalize 幂等，显式调用与退出清理共用一次收口。
+    报告，端侧采集不会悬挂；finalize 幂等，显式调用与退出清理共用一次收口。
     前台守卫（foreground_restore，默认开启，Q16 专项）：Harness perf-start
-    经 SoloPi Scheme 控制面启动录制，可能改变前台——作用域记下 start 前的
+    经 SoloPi Scheme 控制面启动采集，可能改变前台——作用域记下 start 前的
     前台组件，start/stop 之后检测到漂移即还原（am start 组件或 monkey 启动），
     事件随 run 入库（kind=foreground）供判读与专项验收。
     """
@@ -188,7 +188,7 @@ class CollectScope:
         self._finalized = True
         kit = self._kit
         supplement_result = None
-        # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 录制窗口对齐，
+        # 先停补采轮询再停端侧采集：补采窗口与 SoloPi 采集窗口对齐，
         # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
         if self._poller is not None:
             supplement_result = self._poller.stop()
@@ -795,6 +795,7 @@ class PerfKit:
         self._supplement_offset = (offset, offset_source)
         poller.start()
         return poller
+
     def save_baseline(
         self,
         report: dict[str, Any],
@@ -929,7 +930,8 @@ class PerfKit:
             supplement_interval_s=supplement_interval_s,
         ) as scope:
             self._sleep(duration_s)
-        return scope.finalize()
+        # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口
+        return scope.report
 
     def _start_crash_watch(self, target: str, warnings: list[dict[str, Any]]) -> Any | None:
         """采集期间启动 crash/ANR 旁路监听；启动失败只告警，不阻断采集闭环。"""

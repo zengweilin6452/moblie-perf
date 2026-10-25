@@ -7,6 +7,11 @@ canonical key 是全组件唯一词汇（judge/report/store/CLI/宿主只见 can
 - 同名不同单位靠后缀区分（``全局占用(%)`` 是 CPU、``全局占用(MB)`` 是内存）；
 - 列名含动态 pid（``PSS-main-18390(MB)``）用 ``*`` 通配形状匹配；
 - 聚合值（min/median/mean/max/p90）是 metrics 表字段，不是 key。
+
+双端联动契约：SoloPi 开启 ``KEY_CSV_ENGLISH_NAME`` 后，CSV 文件名前缀由
+``SoloPi/solopi-app/app/src/main/java/com/alipay/hulu/util/RecordUtil.java``
+的英文前缀映射表生成；该表与本指标字典的采集项/指标对应关系属双端契约，
+改动任一端必须同步另一端，并回归 tests/contract/test_metrics_dictionary.py。
 """
 
 from __future__ import annotations

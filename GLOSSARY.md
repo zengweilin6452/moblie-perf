@@ -32,6 +32,10 @@ _Avoid_: 守护进程、_LeaseGuard（moblie-auto 语境）
 
 ## 指标与判定
 
+**SoloPi 采集项（Collect Items）**:
+发起采集时传给 SoloPi 的原始项名（如 CPU/FPS/Memory/Battery）；库 API 与 CLI 参数名 `items` 沿用上游契约。经指标字典翻译为指标（Metric）。
+_Avoid_: 指标（Metric，规范化后的测量量）、CSV 列名
+
 **指标（Metric）**:
 由规范英文键、单位与来源定义的标准测量量；SoloPi 的中文原始列名仅存在于指标字典中。
 _Avoid_: 采集项（items）、CSV 列名

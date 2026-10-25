@@ -1,7 +1,9 @@
-"""SQLite 存储（WAL）：聚合指标、事件与 run 归档索引（设计方案 §5/§10）。
+"""SQLite 存储（WAL）：设备状态、聚合指标、事件、基线与 run 归档索引（设计方案 §5/§10）。
 
-默认 <repo>/data/mobile_perf.db，WAL + busy_timeout=5s；原始 CSV 永不入库，
-只入聚合行（min/median/mean/max/p90）。baselines 表本票建表留空（后续票填）。
+默认 <repo>/data/mobile_perf.db，WAL + busy_timeout=5s（并发首连切换重试见
+_enable_wal）；原始 CSV 永不入库，只入聚合行（min/median/mean/max/p90）。
+表结构：devices（设备状态，巡检后如实 upsert）、sessions、metrics、events、
+baselines（宿主经 kit.save_baseline 写入）、runs_artifacts。
 """
 
 from __future__ import annotations
@@ -91,7 +93,7 @@ _METRIC_FIELDS = ("min", "median", "mean", "max", "p90")
 
 
 class PerfStore:
-    """组件的 SQLite 存储入口；同进程会话串行（xdist 到 M4 验证）。"""
+    """组件的 SQLite 存储入口；WAL + busy_timeout，xdist 并发已在工单 11 验证。"""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)

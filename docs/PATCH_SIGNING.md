@@ -26,4 +26,4 @@
     `adb shell "am start -n com.alipay.hulu/com.alipay.hulu.common.scheme.AdbSchemeActivity -d 'solopi://startaction/config?action=set&key=KEY_SUPPRESS_INFO_DIALOG&value=true'"`
   - 读（本机控制面，默认端口 23342）：
     `adb forward tcp:23342 tcp:23342 && curl "http://127.0.0.1:23342/scheme/config?action=get&key=KEY_SUPPRESS_INFO_DIALOG"`
-- 性能 CSV 英文文件名开关（`KEY_CSV_ENGLISH_NAME`）同一通道读写；开启后文件名为 ASCII（列名保持中文，由指标字典翻译）。
+- 性能 CSV 英文文件名开关（`KEY_CSV_ENGLISH_NAME`）同一通道读写；开启后文件名为 ASCII（列名保持中文，由指标字典翻译）。文件名英文前缀映射表在 `SoloPi/solopi-app/app/src/main/java/com/alipay/hulu/util/RecordUtil.java`，与 `src/mobile_perf/metrics.py` 指标字典的双端对应属联动契约：改动任一端须同步另一端并回归指标字典契约测试。
