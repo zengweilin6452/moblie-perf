@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from . import collector, solo
 from . import report as report_module
 from .adb import default_repo_root, resolve_adb
+from .gate import DeviceGate, FileLockGate
 from .session import CollectSession
 from .store import PerfStore
 
@@ -79,6 +80,7 @@ class PerfKit:
         runs_dir: str | Path | None = None,
         backend: CollectBackend | None = None,
         store: PerfStore | None = None,
+        gate: DeviceGate | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ):
@@ -90,6 +92,7 @@ class PerfKit:
         self.runs_dir = Path(runs_dir) if runs_dir is not None else self._repo_root / "runs"
         self._backend = backend
         self._store = store
+        self._gate = gate
         self._clock = clock
         self._sleep = sleep
 
@@ -100,6 +103,18 @@ class PerfKit:
                 str(self.adb_path), self.serial, repo_root=self._repo_root
             )
         return self._backend
+
+    @property
+    def gate(self) -> DeviceGate:
+        """设备准入：宿主可注入；缺省按 moblie-auto 锁文件协议对等参与。"""
+        if self._gate is None:
+            self._gate = FileLockGate()
+        return self._gate
+
+    def _borrowed(self, purpose: str, action: Callable[[], Any]) -> Any:
+        """在短事务借用窗口内执行一个设备命令（ADR-0001：完成即还）。"""
+        with self.gate.borrow(self.serial, purpose=purpose):
+            return action()
 
     def run_collect(
         self,
@@ -123,8 +138,13 @@ class PerfKit:
             target=target,
             items=items,
             serial=self.serial,
-            start=lambda: backend.start(target, items),
-            stop=backend.stop,
+            start=lambda: self._borrowed(
+                "mobile_perf.start", lambda: backend.start(target, items)
+            ),
+            stop=lambda session_id, output_dir: self._borrowed(
+                "mobile_perf.stop_pull",
+                lambda: backend.stop(session_id, output_dir),
+            ),
             clock=self._clock,
         )
         session.start()

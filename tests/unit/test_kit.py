@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from mobile_perf.gate import FileLockGate, GateBusyError
 from mobile_perf.kit import CollectError, PerfKit
 from mobile_perf.store import PerfStore
 
@@ -43,6 +44,7 @@ def make_kit(tmp_path, backend, **kwargs):
     kwargs.setdefault("clock", lambda: next(clocks))
     kwargs.setdefault("sleep", lambda seconds: None)
     kwargs.setdefault("store", PerfStore(tmp_path / "data" / "mobile_perf.db"))
+    kwargs.setdefault("gate", FileLockGate(tmp_path / "gate-leases"))
     return PerfKit(**kwargs)
 
 
@@ -159,3 +161,94 @@ def test_kit_resolves_adb_by_three_level_rule(tmp_path):
     kit = PerfKit(adb_path=fake_adb(tmp_path), serial="749622c9")
 
     assert kit.adb_path == Path(fake_adb(tmp_path))
+
+
+class GateProbe:
+    """探针 gate：记录借用窗口与 purpose，供编排断言。"""
+
+    def __init__(self):
+        self.held = False
+        self.borrows = []
+        self.held_at_command = []
+
+    def borrow(self, serial, *, purpose, timeout_s=10.0):
+        self.borrows.append((serial, purpose))
+        probe = self
+
+        class Token:
+            def __enter__(self):
+                probe.held = True
+                return None
+
+            def __exit__(self, *exc):
+                probe.held = False
+                return False
+
+        return Token()
+
+
+class ProbeBackend(FakeHarnessBackend):
+    """在每类设备命令执行时记录 gate 持有状态。"""
+
+    def __init__(self, probe):
+        super().__init__()
+        self._probe = probe
+        self.held_at_command = []
+
+    def start(self, target, items):
+        self.held_at_command.append(("start", self._probe.held))
+        return super().start(target, items)
+
+    def stop(self, session_id, output_dir):
+        self.held_at_command.append(("stop", self._probe.held))
+        return super().stop(session_id, output_dir)
+
+
+def test_run_collect_borrows_gate_per_command_and_free_during_recording(tmp_path):
+    probe = GateProbe()
+    backend = ProbeBackend(probe)
+    held_during_recording = []
+    kit = make_kit(
+        tmp_path, backend, gate=probe,
+        sleep=lambda seconds: held_during_recording.append(probe.held),
+    )
+
+    kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        host_run_id="run-gate-1",
+        runs_dir=tmp_path / "runs",
+    )
+
+    assert probe.borrows == [
+        ("749622c9", "mobile_perf.start"),
+        ("749622c9", "mobile_perf.stop_pull"),
+    ]
+    assert backend.held_at_command == [("start", True), ("stop", True)]
+    assert held_during_recording == [False]  # 录制进行中绝不持锁
+
+
+def test_run_collect_fails_fast_when_gate_busy_before_any_device_command(tmp_path):
+    class BusyGate:
+        def borrow(self, serial, *, purpose, timeout_s=10.0):
+            raise GateBusyError(f"设备 {serial} 正被其他进程占用（purpose={purpose}）")
+
+    backend = FakeHarnessBackend()
+    kit = make_kit(tmp_path, backend, gate=BusyGate())
+
+    with pytest.raises(GateBusyError, match="749622c9"):
+        kit.run_collect(
+            target="tv.danmaku.bili",
+            items=["CPU"],
+            duration_s=30.0,
+            host_run_id="run-gate-busy",
+            runs_dir=tmp_path / "runs",
+        )
+    assert backend.started == []  # fast-fail：未发出任何设备命令
+
+
+def test_kit_defaults_to_file_lock_gate(tmp_path):
+    kit = PerfKit(adb_path=fake_adb(tmp_path), serial="749622c9")
+
+    assert isinstance(kit.gate, FileLockGate)
