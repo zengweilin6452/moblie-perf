@@ -13,6 +13,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+# M6 弱网：mitmproxy 需 Python ≥3.12，跑在 .scratch 下的独立 venv（不进仓库）
+.scratch/venv-*/
 
 # ---- Node / 前端 ----
 node_modules/
