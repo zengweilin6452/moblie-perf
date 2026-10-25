@@ -18,6 +18,9 @@ dev = [
 [project.scripts]
 mobile-perf = "mobile_perf.cli:main"
 
+[project.entry-points.pytest11]
+mobile-perf = "mobile_perf.pytest_plugin"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mobile_perf"]
 
