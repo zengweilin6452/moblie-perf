@@ -15,6 +15,7 @@ from . import frameinfo as frameinfo_module
 from . import jank as jank_module
 from . import leak as leak_module
 from . import metrics as metrics_module
+from . import netprof as netprof_module
 from . import report as report_module
 from . import startup as startup_module
 from . import supplement as supplement_module
@@ -155,6 +156,9 @@ class CollectScope:
         jank_thresholds_ms: dict[str, float] | None = None,
         frame_poll: bool = False,
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
+        net_profile: netprof_module.NetProfile | None = None,
+        net_mitmdump: str | None = None,
+        net_port: int = netprof_module.DEFAULT_PORT,
     ):
         self._kit = kit
         self.target = target
@@ -164,6 +168,10 @@ class CollectScope:
         self._supplement_interval_s = supplement_interval_s
         self._frame_poll = frame_poll
         self._frame_interval_s = frame_interval_s
+        self._net_profile = net_profile
+        self._net_mitmdump = net_mitmdump
+        self._net_port = net_port
+        self._net_profiler: netprof_module.NetProfiler | None = None
         self._start_mode = start_mode
         self._jank_thresholds_ms = (
             jank_module.validate_thresholds(jank_thresholds_ms)
@@ -199,6 +207,12 @@ class CollectScope:
         backend = kit.backend
         if kit.foreground_restore:
             self.foreground_before = kit._read_foreground_state()
+        # 网络剖面（ticket 17）：在采集窗口开始前施加，代理不可用/端口占用等
+        # 情况不抛错——如实降级，由 finalize 落 not_tested 原因与事件
+        if self._net_profile is not None:
+            self._net_profiler = kit._start_net_profile(
+                self._net_profile, self._run_dir, self._net_mitmdump, self._net_port
+            )
         self._session = CollectSession(
             target=self.target,
             items=self.items,
@@ -272,6 +286,11 @@ class CollectScope:
             supplement_result = self._poller.stop()
         if self._frame_poller is not None:
             frame_result = self._frame_poller.stop()
+        # 弱网环境必须先恢复再停采集：stop/pull 期间设备仍要能正常联网，
+        # 否则 pull 会被自己的代理拖慢甚至失败。恢复结果随 meta 落库。
+        net_session = (
+            self._net_profiler.stop() if self._net_profiler is not None else None
+        )
         try:
             record = self._session.stop(str(self._artifacts_dir))
         finally:
@@ -366,8 +385,23 @@ class CollectScope:
                 frameinfo_module.write_frames_csv(
                     self._artifacts_dir / "frames_gfxinfo.csv", frame_result.samples
                 )
+        # 弱网连接级耗时（ticket 17）：只有代理侧日志真的看到连接才有值；
+        # 未生效时不出数，由下方 not_tested 标注与事件说明原因
+        net_aggregates: list[dict[str, Any]] = []
+        net_meta: dict[str, Any] | None = None
+        if net_session is not None:
+            net_meta = net_session.as_dict()
+            if net_session.effective:
+                net_aggregates = netprof_module.conn_duration_rows(net_session.log_summary)
+                net_meta["connSamples"] = len(net_session.log_summary.conn_durations_ms)
+            elif net_session.applied:
+                net_meta["connSamples"] = 0
         merged_aggregates = (
-            aggregates + supplement_aggregates + jank_aggregates + frame_aggregates
+            aggregates
+            + supplement_aggregates
+            + jank_aggregates
+            + frame_aggregates
+            + net_aggregates
         )
         # 启动编排结论（ticket 12）：ms 为单样本指标（聚合字段填单值），
         # 双路对照与失败明细随事件/meta 如实入库
@@ -415,6 +449,17 @@ class CollectScope:
             metrics_module.mark_not_tested(
                 metrics_summary, getattr(readiness, "degraded_items", ())
             )
+        # 弱网未生效（无 mitmproxy / 代理侧零连接）时如实 not_tested：给出原因，
+        # 不留空白让人误以为"没测"等于"没做"，也不硬造 0 值
+        if net_meta is not None and net_session is not None and not net_session.effective:
+            metrics_summary[netprof_module.METRIC_CONN_DURATION] = {
+                "notTested": True,
+                "notTestedReason": net_session.not_tested_reason,
+            }
+            if net_session.hint:
+                metrics_summary[netprof_module.METRIC_CONN_DURATION]["hint"] = (
+                    net_session.hint
+                )
 
         meta = {
             "runId": self._run_id,
@@ -432,6 +477,7 @@ class CollectScope:
             "integrity": integrity,
             "supplement": supplement_info,
             "frames": frame_meta,
+            "network": net_meta,
             "startup": startup_meta,
             "jank": (
                 {"thresholdsMs": dict(self._jank_thresholds_ms)}
@@ -455,6 +501,7 @@ class CollectScope:
             events=[],
             jank_thresholds_ms=self._jank_thresholds_ms,
             frames=frame_meta,
+            network=net_meta,
         )
 
         store = kit.store
@@ -503,6 +550,20 @@ class CollectScope:
                     "rounds": frame_result.rounds,
                     "errors": frame_result.errors,
                     "resetOk": frame_result.reset_ok,
+                },
+            )
+        # 网络剖面事件（ticket 17）：生效与否、代理侧证据、恢复结果一并入库。
+        # 未生效用 net_profile_degraded，生效用 net_profile —— 两者都记，
+        # 便于事后区分"没跑弱网"与"跑了但没抓到流量"
+        if net_meta is not None:
+            store.record_event(
+                self._run_id,
+                kind=(
+                    "net_profile" if net_session.effective else "net_profile_degraded"
+                ),
+                detail={
+                    **net_meta,
+                    "connSamples": net_meta.get("connSamples", 0),
                 },
             )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
@@ -984,6 +1045,29 @@ class PerfKit:
             return None
         return time.time() - device_epoch if device_epoch is not None else None
 
+    def _start_net_profile(
+        self,
+        profile: netprof_module.NetProfile,
+        run_dir: Path,
+        mitmdump: str | None,
+        port: int,
+    ) -> netprof_module.NetProfiler:
+        """施加网络剖面（采集窗口之前）：代理 → reverse → 系统代理。
+
+        失败不抛错：``NetSession`` 里带着原因，finalize 据此把
+        ``net_conn_duration_ms`` 标 not_tested 并落事件。代理日志与 stdout
+        落在 run 目录下（artifacts 之外），便于事后核查代理是否真的看到流量。
+        """
+        profiler = netprof_module.NetProfiler(
+            adb_path=str(self.adb_path),
+            serial=self.serial,
+            mitmdump=mitmdump,
+            port=port,
+            call_device=self._channel,
+        )
+        profiler.start(profile, work_dir=run_dir / "network")
+        return profiler
+
     def _start_frame_poll(
         self, enabled: bool, interval_s: float, target: str
     ) -> frameinfo_module.FramePoller | None:
@@ -1102,6 +1186,10 @@ class PerfKit:
         jank_thresholds_ms: dict[str, float] | None = None,
         frame_poll: bool = False,
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
+        net_profile: str | netprof_module.NetProfile | None = None,
+        net_overrides: dict[str, float] | None = None,
+        net_mitmdump: str | None = None,
+        net_port: int = netprof_module.DEFAULT_PORT,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
@@ -1110,6 +1198,10 @@ class PerfKit:
         cold/warm 在采集窗口内编排启动并计得启动时间指标。退出 with 块即
         finalize（停止 → pull → 校验 → 归档 → 入库 → 报告）；报告同时在
         scope.report 上留存。host_run_id 未传时自动生成。
+
+        net_profile（ticket 17）：档位名（none/4g/3g/weak/custom）或已构造的
+        ``NetProfile``；None=不动网络。档位名非法直接抛 ValueError（早失败），
+        代理不可用等运行时问题不抛错——如实降级为 not_tested。
         """
         if spec is not None:
             if target is _UNSET:
@@ -1145,6 +1237,11 @@ class PerfKit:
                 f"start_mode 只支持 {', '.join(startup_module.STARTUP_MODES)} 或 None，"
                 f"收到 {start_mode!r}"
             )
+        resolved_profile = (
+            net_profile
+            if isinstance(net_profile, netprof_module.NetProfile) or net_profile is None
+            else netprof_module.build_profile(net_profile, net_overrides)
+        )
         return CollectScope(
             self,
             target=target,
@@ -1157,6 +1254,9 @@ class PerfKit:
             jank_thresholds_ms=jank_thresholds_ms,
             frame_poll=frame_poll,
             frame_interval_s=frame_interval_s,
+            net_profile=resolved_profile,
+            net_mitmdump=net_mitmdump,
+            net_port=net_port,
         )
 
     def run_collect(
@@ -1173,6 +1273,10 @@ class PerfKit:
         jank_thresholds_ms: dict[str, float] | None = None,
         frame_poll: bool = False,
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
+        net_profile: str | netprof_module.NetProfile | None = None,
+        net_overrides: dict[str, float] | None = None,
+        net_mitmdump: str | None = None,
+        net_port: int = netprof_module.DEFAULT_PORT,
     ) -> dict[str, Any]:
         """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
@@ -1188,6 +1292,8 @@ class PerfKit:
         温度补采跳过。
         frame_poll=True（ticket 15）时另起逐帧轮询器（gfxinfo framestats），
         产出逐帧 P50/P90/P99 与超时帧占比；零帧/命令失败如实降级为事件。
+        net_profile（ticket 17）在采集窗口前施加弱网、窗口后恢复，产出连接级
+        耗时 `net_conn_duration_ms`；代理不可用/未抓到流量如实 not_tested。
         """
         if duration_s <= 0:
             raise ValueError("duration_s 必须为正数")
@@ -1203,6 +1309,10 @@ class PerfKit:
             jank_thresholds_ms=jank_thresholds_ms,
             frame_poll=frame_poll,
             frame_interval_s=frame_interval_s,
+            net_profile=net_profile,
+            net_overrides=net_overrides,
+            net_mitmdump=net_mitmdump,
+            net_port=net_port,
         ) as scope:
             self._sleep(duration_s)
         # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口

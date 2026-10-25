@@ -505,3 +505,85 @@ def test_write_html_omits_frame_section_without_frames(tmp_path):
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
     assert "逐帧卡顿" not in html
+
+
+# ---------- 网络剖面（ticket 17）：档位与生效证据 ----------
+
+
+def _network_meta(**overrides):
+    meta = {
+        "profile": {"name": "weak", "latencyMs": 400.0, "downKbps": 400.0,
+                    "upKbps": 200.0, "lossPct": 2.0},
+        "applied": True,
+        "effective": True,
+        "evidence": "observed",
+        "notTestedReason": None,
+        "hint": None,
+        "proxy": {"connections": 12, "connectRequests": 12, "httpRequests": 0,
+                  "hosts": ["api.test"], "errors": 0, "bytesDown": 100, "bytesUp": 50,
+                  "params": None},
+        "setupErrors": [],
+        "restored": {"deviceProxy": True, "reverse": True, "proxyProcess": True},
+        "logPath": "/tmp/net_proxy.jsonl",
+    }
+    meta.update(overrides)
+    return meta
+
+
+def test_build_report_network_block_records_tier_and_source():
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], network=_network_meta()
+    )
+
+    assert built["network"]["tier"] == "passthrough"
+    assert built["network"]["source"] == "mitmproxy"
+    assert built["network"]["profile"]["name"] == "weak"
+
+
+def test_build_report_without_network_omits_block():
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    assert "network" not in built
+
+
+def test_write_html_renders_network_section_with_evidence_rule(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], network=_network_meta()
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "网络剖面" in html
+    assert "Network profile" in html
+    assert "weak" in html
+    assert "只看代理侧日志" in html  # 生效判据必须写明，防止拿页面表现当证据
+
+
+def test_write_html_network_section_shows_not_tested_reason(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        network=_network_meta(
+            applied=False,
+            effective=False,
+            evidence="unavailable",
+            notTestedReason="mitmproxy 不可用（未安装，或解释器版本低于其要求的 Python 3.12）",
+            hint="把 MOBILE_PERF_MITMDUMP 指向该 venv 的 mitmdump",
+            restored={},
+        ),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "未生效原因" in html
+    assert "mitmproxy 不可用" in html
+    assert "MOBILE_PERF_MITMDUMP" in html
+
+
+def test_write_html_omits_network_section_without_network(tmp_path):
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "网络剖面" not in html

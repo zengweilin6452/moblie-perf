@@ -149,6 +149,7 @@ def build_report(
     events: list[dict[str, Any]] | None = None,
     jank_thresholds_ms: dict[str, float] | None = None,
     frames: dict[str, Any] | None = None,
+    network: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典（JSON 与 HTML 共用）。
 
@@ -191,6 +192,14 @@ def build_report(
             **frames,
             "source": "gfxinfo_framestats",
             "granularity": "per_frame",
+        }
+    # 网络剖面（ticket 17）：档位是可比性维度，与逐帧/GPU 并列展示。
+    # 只放已脱敏的结论（档位参数、证据、恢复结果），不含任何流量内容
+    if network is not None:
+        report["network"] = {
+            **network,
+            "tier": "passthrough",
+            "source": "mitmproxy",
         }
     return report
 
@@ -316,6 +325,8 @@ def assemble_run_report(
         jank_thresholds_ms=(meta.get("jank") or {}).get("thresholdsMs"),
         # 逐帧采集元信息同样随 meta.json 持久化，重组报告时口径一致
         frames=meta.get("frames"),
+        # 网络剖面结论同样随 meta.json 持久化（档位是可比性维度，不能丢）
+        network=meta.get("network"),
     )
 
 
@@ -352,6 +363,7 @@ th {{ background: #f2f4f8; }}
 {startup_markup}
 {jank_markup}
 {frame_markup}
+{network_markup}
 <h2>聚合统计</h2>
 <table>
 <tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
@@ -443,6 +455,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         startup_markup=_startup_markup(report),
         jank_markup=_jank_markup(report),
         frame_markup=_frame_markup(report),
+        network_markup=_network_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
@@ -655,6 +668,54 @@ def _frame_markup(report: dict[str, Any]) -> str:
         "<p>⚠️ 与上方「卡顿分级」口径不同：此处按<strong>单帧</strong>耗时统计，"
         "上方按<strong>采样窗口</strong>的最长延迟分桶，两者粒度不同、不可互相换算。</p>"
     ).format(rows="\n".join(rows), detail=html_escape(detail_text))
+
+
+def _network_markup(report: dict[str, Any]) -> str:
+    """网络剖面小节（ticket 17）：档位参数 + 代理侧证据 + 恢复结果。
+
+    生效判定**只看代理侧日志**——报告里明写这一点，避免读者拿"页面能打开"
+    当证据。未生效时把原因与下一步摆在表里，不隐藏。
+    """
+    network = report.get("network") or {}
+    if not network:
+        return ""
+    profile = network.get("profile") or {}
+    proxy = network.get("proxy") or {}
+    restored = network.get("restored") or {}
+    rows = [
+        ("档位 / Profile", profile.get("name") or ""),
+        ("延迟 / Latency (ms)", _fmt(profile.get("latencyMs"))),
+        ("下行 / Down (kbps)", _fmt(profile.get("downKbps"))),
+        ("上行 / Up (kbps)", _fmt(profile.get("upKbps"))),
+        ("丢包 / Loss (%)", _fmt(profile.get("lossPct"))),
+        ("代理连接 / Connections", _fmt(proxy.get("connections"))),
+        ("命中域名 / Hosts", ", ".join(proxy.get("hosts") or []) or "无"),
+        ("代理侧错误 / Proxy errors", _fmt(proxy.get("errors"))),
+        ("生效 / Effective", "是 / yes" if network.get("effective") else "否 / no"),
+    ]
+    if network.get("notTestedReason"):
+        rows.append(("未生效原因 / Reason", network["notTestedReason"]))
+    if network.get("hint"):
+        rows.append(("下一步 / Next step", network["hint"]))
+    if restored:
+        rows.append(
+            (
+                "环境恢复 / Restored",
+                "，".join(f"{key}={value}" for key, value in restored.items()),
+            )
+        )
+    body = "\n".join(
+        f"<tr><td>{html_escape(name)}</td><td>{html_escape(str(value))}</td></tr>"
+        for name, value in rows
+    )
+    return (
+        "<h2>网络剖面 / Network profile</h2>"
+        '<table class="net-profile"><tr><th>项 / Field</th><th>值 / Value</th></tr>'
+        f"{body}</table>"
+        "<p>档位 / Tier：直通整形（不解密 TLS），只产出连接级耗时与字节数，"
+        "无 URL / 状态码。生效判定<strong>只看代理侧日志</strong>——被测 App 有本地"
+        "缓存与多域名兜底，页面能打开<strong>不</strong>代表代理生效。</p>"
+    )
 
 
 def _jank_threshold_line_script(report: dict[str, Any]) -> str:

@@ -172,6 +172,12 @@ METRICS: dict[str, MetricSpec] = {
             "app_frame_count", "帧", "pc_supplement",
             "采样帧数", "Sampled frame count",
         ),
+        # 弱网直通档（ticket 17）：代理侧观察到的 TCP 流「建立→首字节」耗时。
+        # 不解密，故无 URL/状态码；接口级明细归 ticket 18 的解密档
+        MetricSpec(
+            "net_conn_duration_ms", "ms", "pc_supplement",
+            "连接建立耗时", "Connection setup duration",
+        ),
         # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
         # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
         MetricSpec(

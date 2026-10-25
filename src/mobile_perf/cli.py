@@ -14,7 +14,8 @@ import os
 import sys
 from pathlib import Path
 
-from .adb import default_repo_root, first_online_device, resolve_adb
+from . import netprof
+from .adb import default_call_device, default_repo_root, first_online_device, resolve_adb
 from .gate import GateBusyError
 from .judge import JudgeSpec
 from .kit import CollectError, PerfKit, ProfileMismatchError, TrendError
@@ -85,6 +86,43 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="逐帧轮询间隔秒（默认 2.0；dumpsys 不触发渲染，间隔过小无收益）",
+    )
+    collect_parser.add_argument(
+        "--net-profile",
+        choices=(*netprof.PROFILE_NAMES, None),
+        help=(
+            "网络档位（ticket 17）：none/4g/3g/weak/custom。采集窗口前施加、结束后"
+            "恢复；未指定则不动网络。custom 需配 --net-latency/--net-down/--net-up/"
+            "--net-loss 四项"
+        ),
+    )
+    collect_parser.add_argument("--net-latency", type=float, help="自定义延迟 ms")
+    collect_parser.add_argument("--net-down", type=float, help="自定义下行 kbps")
+    collect_parser.add_argument("--net-up", type=float, help="自定义上行 kbps")
+    collect_parser.add_argument("--net-loss", type=float, help="自定义丢包率 %%（0-100）")
+    collect_parser.add_argument(
+        "--net-mitmdump",
+        help="mitmdump 路径（默认 env MOBILE_PERF_MITMDUMP > PATH；需 Python ≥3.12 环境）",
+    )
+    collect_parser.add_argument(
+        "--net-port", type=int, default=netprof.DEFAULT_PORT,
+        help=f"本地代理端口（默认 {netprof.DEFAULT_PORT}）",
+    )
+
+    netprof_parser = sub.add_parser(
+        "netprof", help="弱网环境维护：doctor 检查并清理残留代理/端口转发"
+    )
+    netprof_sub = netprof_parser.add_subparsers(dest="netprof_command", required=True)
+    netprof_doctor = netprof_sub.add_parser(
+        "doctor", help="检查并清理上次异常退出遗留的系统代理与 adb reverse"
+    )
+    netprof_doctor.add_argument("--serial", help="设备 serial")
+    netprof_doctor.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
+    netprof_doctor.add_argument(
+        "--port", type=int, default=netprof.DEFAULT_PORT, help="要清理的代理端口"
+    )
+    netprof_sub.add_parser(
+        "probe", help="探测本机 mitmproxy 是否可用（不可用时给出安装提示）"
     )
 
     report_parser = sub.add_parser(
@@ -203,6 +241,7 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
 
     try:
         jank_thresholds = _parse_jank_thresholds(args.jank_threshold)
+        net_profile, net_overrides = _parse_net_profile(args)
     except ValueError as exc:
         print(f"[mobile-perf] collect 参数错误: {exc}", file=sys.stderr)
         return 1
@@ -230,6 +269,10 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
                 if args.frame_interval is not None
                 else {}
             ),
+            net_profile=net_profile,
+            net_overrides=net_overrides,
+            net_mitmdump=args.net_mitmdump,
+            net_port=args.net_port,
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)
@@ -243,6 +286,55 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
+
+
+def _parse_net_profile(args: argparse.Namespace) -> tuple[str | None, dict[str, float] | None]:
+    """把 --net-* 参数解析成档位名与覆盖参数；校验交给 netprof.build_profile。
+
+    只在这里做"该给的有没有给"的检查：给了覆盖参数却没给档位、custom 缺项，
+    都在开采集之前失败（错误网络条件跑出来的 run 没有意义）。
+    """
+    overrides = {
+        key: value
+        for key, value in (
+            ("latency_ms", args.net_latency),
+            ("down_kbps", args.net_down),
+            ("up_kbps", args.net_up),
+            ("loss_pct", args.net_loss),
+        )
+        if value is not None
+    }
+    if args.net_profile is None:
+        if overrides:
+            raise ValueError("给了 --net-latency/--net-down 等参数但未指定 --net-profile")
+        return None, None
+    if args.net_profile != netprof.CUSTOM_PROFILE and not overrides:
+        overrides = None
+    netprof.build_profile(args.net_profile, overrides)  # 早失败：非法档位/参数在这里抛
+    return args.net_profile, overrides
+
+
+def _run_netprof(args: argparse.Namespace) -> int:
+    """netprof 子命令：doctor（清理残留）/ probe（探测 mitmproxy 可用性）。"""
+    if args.netprof_command == "probe":
+        availability = netprof.find_mitmproxy()
+        print(netprof.dump_json(availability.as_dict()))
+        return 0 if availability.available else 1
+
+    adb_path = str(resolve_adb(args.adb))
+    serial = _resolve_serial(args.serial, adb_path)
+    if not serial:
+        print(
+            "[mobile-perf] 无法确定设备 serial：无 --serial、无 MOBILE_PERF_SERIAL，"
+            "且当前不是恰好一台设备在线",
+            file=sys.stderr,
+        )
+        return 1
+    call_device = default_call_device(adb_path)
+    report = netprof.doctor(call_device, serial, args.port)
+    print(netprof.dump_json(report))
+    # 清理后复验不干净 → 非零退出（残留代理会让后续采集悄悄跑在坏网络上）
+    return 0 if report["proxyClean"] and report["reverseClean"] else 1
 
 
 def _parse_jank_thresholds(raw: str | None) -> dict[str, float] | None:
@@ -403,5 +495,7 @@ def main(argv: list[str] | None = None, *, kit_factory=None) -> int:
         return _run_leak(args, kit_factory)
     if args.command == "serve":
         return _run_serve(args, kit_factory)
+    if args.command == "netprof":
+        return _run_netprof(args)
     build_parser().error(f"未知命令: {args.command}")
     return 2

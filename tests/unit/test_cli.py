@@ -27,7 +27,8 @@ class StubKit:
 
     def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None,
                     start_mode=None, jank_thresholds_ms=None, frame_poll=False,
-                    frame_interval_s=None):
+                    frame_interval_s=None, net_profile=None, net_overrides=None,
+                    net_mitmdump=None, net_port=None):
         self.calls.append(
             {
                 "target": target,
@@ -39,6 +40,10 @@ class StubKit:
                 "jank_thresholds_ms": jank_thresholds_ms,
                 "frame_poll": frame_poll,
                 "frame_interval_s": frame_interval_s,
+                "net_profile": net_profile,
+                "net_overrides": net_overrides,
+                "net_mitmdump": net_mitmdump,
+                "net_port": net_port,
             }
         )
         return {"runId": host_run_id or "run-stub", "target": target}
@@ -850,3 +855,124 @@ def test_leak_command_profile_mismatch_and_trend_error_return_nonzero(tmp_path, 
     )
     assert exit_code == 1
     assert "无数据" in capsys.readouterr().err
+
+
+# ---------- 网络档位（ticket 17）：collect --net-profile 与 netprof 子命令 ----------
+
+
+def _collect_with_net(tmp_path, *extra):
+    kits = []
+    exit_code = cli.main(
+        [
+            "collect", "tv.danmaku.bili", "--items", "CPU", "--serial", "749622c9",
+            "--adb", fake_adb(tmp_path), *extra,
+        ],
+        kit_factory=lambda **kwargs: kits.append(StubKit(**kwargs)) or kits[0],
+    )
+    return exit_code, kits
+
+
+def test_collect_passes_net_profile_and_port(tmp_path):
+    exit_code, kits = _collect_with_net(
+        tmp_path, "--net-profile", "weak", "--net-port", "9090"
+    )
+
+    assert exit_code == 0
+    call = kits[0].calls[0]
+    assert call["net_profile"] == "weak"
+    assert call["net_port"] == 9090
+    assert call["net_overrides"] is None  # 预设档不传覆盖
+
+
+def test_collect_net_profile_custom_requires_all_parameters(tmp_path, capsys):
+    exit_code, kits = _collect_with_net(
+        tmp_path, "--net-profile", "custom", "--net-latency", "100"
+    )
+
+    assert exit_code == 1
+    assert kits == []  # 未开采集
+    assert "缺少参数" in capsys.readouterr().err
+
+
+def test_collect_net_overrides_without_profile_is_rejected(tmp_path, capsys):
+    exit_code, kits = _collect_with_net(tmp_path, "--net-latency", "100")
+
+    assert exit_code == 1
+    assert kits == []
+    assert "未指定 --net-profile" in capsys.readouterr().err
+
+
+def test_collect_net_profile_preset_with_overrides(tmp_path):
+    exit_code, kits = _collect_with_net(
+        tmp_path, "--net-profile", "3g", "--net-latency", "500"
+    )
+
+    assert exit_code == 0
+    assert kits[0].calls[0]["net_overrides"] == {"latency_ms": 500.0}
+
+
+def test_collect_rejects_unknown_net_profile_choice(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(
+            ["collect", "tv.danmaku.bili", "--serial", "749622c9",
+             "--adb", fake_adb(tmp_path), "--net-profile", "2g"],
+            kit_factory=lambda **kwargs: StubKit(**kwargs),
+        )
+
+
+def test_netprof_probe_reports_missing_with_hint(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.netprof, "find_mitmproxy",
+        lambda: cli.netprof.ProxyAvailability(available=False, reason="不可用", hint="装它"),
+    )
+
+    exit_code = cli.main(["netprof", "probe"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["available"] is False
+    assert payload["hint"] == "装它"
+
+
+def test_netprof_doctor_cleans_and_verifies(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    responses = iter(["127.0.0.1:8080\n", "h1 tcp:8080 tcp:8080\n", ":0\n", ""])
+    monkeypatch.setattr(
+        cli, "default_call_device",
+        lambda _adb: (lambda args, timeout_s=15.0: SimpleNamespace(
+            stdout=next(responses, ""), returncode=0, stderr=""
+        )),
+    )
+
+    exit_code = cli.main(
+        ["netprof", "doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["cleaned"] is True
+    assert payload["proxyClean"] is True
+    assert payload["reverseClean"] is True
+
+
+def test_netprof_doctor_nonzero_when_cleanup_does_not_take_effect(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    # 清理后复读仍是旧值：清理命令返回 0 不代表设备干净
+    monkeypatch.setattr(
+        cli, "default_call_device",
+        lambda _adb: (lambda args, timeout_s=15.0: SimpleNamespace(
+            stdout="127.0.0.1:8080\n" if "http_proxy" in args else "", returncode=0, stderr=""
+        )),
+    )
+
+    exit_code = cli.main(
+        ["netprof", "doctor", "--serial", "749622c9", "--adb", fake_adb(tmp_path)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["proxyClean"] is False
