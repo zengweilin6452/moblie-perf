@@ -42,6 +42,8 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "app_frame_p99_ms",
         "app_frame_jank_ratio_pct",
         "app_frame_count",
+        # GPU 应用级显存（ticket 16，source=pc_supplement）
+        "gpu_mem_mb",
         # 弱网直通档（ticket 17，source=pc_supplement，代理侧连接耗时）
         "net_conn_duration_ms",
         # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）

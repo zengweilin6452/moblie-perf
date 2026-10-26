@@ -229,7 +229,7 @@ class CollectScope:
         self._session.start()
         kit._supplement_offset = (0.0, "assumed")
         self._poller = kit._start_supplement(
-            self._supplement, self._supplement_interval_s
+            self._supplement, self._supplement_interval_s, self.target
         )
         # 逐帧采集（ticket 15）：reset 清零窗口后按间隔增量读 framestats，
         # 独立线程、不持 gate 设备权；失败如实降级为事件，不阻断采集闭环
@@ -341,6 +341,9 @@ class CollectScope:
                     "rounds": supplement_result.rounds,
                     "errors": supplement_result.errors,
                     "degraded": supplement_result.degraded,
+                    # 实际生效的 GPU 利用率数据源（kgsl_gpubusy / dumpsys_gpu）；
+                    # 两个源都没拿到时为 None，与 degraded 里的逐级原因配合看
+                    "gpuSource": supplement_result.gpu_source,
                     "clockOffsetS": kit._supplement_offset[0],
                     "clockOffsetSource": kit._supplement_offset[1],
                 }
@@ -502,6 +505,20 @@ class CollectScope:
             jank_thresholds_ms=self._jank_thresholds_ms,
             frames=frame_meta,
             network=net_meta,
+            # GPU 双源（ticket 16）：数据源与降级链随报告落盘，报告据此标注口径
+            gpu=(
+                {
+                    "enabled": True,
+                    "gpuSource": supplement_info.get("gpuSource"),
+                    "degraded": [
+                        item
+                        for item in (supplement_info.get("degraded") or [])
+                        if item.get("key") in ("gpu_util_pct", "gpu_mem_mb")
+                    ],
+                }
+                if supplement_info.get("enabled")
+                else None
+            ),
         )
 
         store = kit.store
@@ -524,15 +541,19 @@ class CollectScope:
         store.record_metrics(self._run_id, merged_aggregates)
         store.record_run_artifacts(self._run_id, [str(self._artifacts_dir), str(self._run_dir)])
         for degraded in supplement_info.get("degraded", []):
+            detail = {
+                "key": degraded["key"],
+                "reason": degraded["reason"],
+                "rounds": supplement_info.get("rounds"),
+                "errors": supplement_info.get("errors"),
+            }
+            # 降级链逐级原因（工单 16）：区分"这台机器没这个源"与"有但这次读失败"
+            if degraded.get("stages"):
+                detail["stages"] = degraded["stages"]
             store.record_event(
                 self._run_id,
                 kind="supplement_degraded",
-                detail={
-                    "key": degraded["key"],
-                    "reason": degraded["reason"],
-                    "rounds": supplement_info.get("rounds"),
-                    "errors": supplement_info.get("errors"),
-                },
+                detail=detail,
             )
         # 逐帧采集降级（ticket 15）：零帧/全轮失败时如实记事件，不产出 0 值指标
         if frame_meta is not None and not frame_aggregates:
@@ -1089,13 +1110,14 @@ class PerfKit:
         return poller
 
     def _start_supplement(
-        self, enabled: bool, interval_s: float
+        self, enabled: bool, interval_s: float, target_pkg: str | None = None
     ) -> supplement_module.SupplementPoller | None:
         """按巡检结论构造并启动补采轮询器（紧随 session.start，起点即会话起点）。
 
         对时基准：巡检 clock_offset_s 优先；无巡检结论则短事务实测；实测失败
         退回 0（假设已同步，偏差如实留在 meta 供判读）。充电降级
         （degraded_items 含 Temperature）时温度补采跳过。轮询器不持 gate 设备权。
+        target_pkg 用于解析应用级显存的 pid（工单 16），缺省则不采该指标。
         """
         if not enabled:
             return None
@@ -1118,6 +1140,9 @@ class PerfKit:
             interval_s=interval_s,
             clock_offset_s=offset,
             collect_temperature=not charging,
+            # 应用级显存需要目标包名解析 pid（工单 16）；拿不到包名就不采，
+            # 而不是去猜某个进程的显存
+            target_pkg=target_pkg,
             call_device=self._channel,
         )
         self._supplement_offset = (offset, offset_source)

@@ -672,11 +672,18 @@ def test_kit_defaults_to_file_lock_gate(tmp_path):
 
 # ---- supplement 接线：采集期间旁路补采，stop 后合并入库（票 10） ----
 
+# 段标记格式（工单 16）：kgsl 窗口计数器 / dumpsys battery / dumpsys gpu / pidof
 SUPPLEMENT_STDOUT = (
     "1792895592\n"
+    "__mp_section__:gpubusy\n"
+    "  250000 1000000\n"
+    "__mp_section__:battery\n"
     "Current Battery Service state:\n"
     "  temperature: 285\n"
-    "GPU Utilization (last 1s): 30%\n"
+    "__mp_section__:gpu\n"
+    "Proc 4242 total: 131457024\n"
+    "__mp_section__:pid\n"
+    "4242\n"
 )
 
 
@@ -747,7 +754,7 @@ class TestRunCollectSupplement:
         )
         assert meta["supplement"]["errors"] == meta["supplement"]["rounds"]
         keys = {entry["key"] for entry in meta["supplement"]["degraded"]}
-        assert keys == {"temp_battery_c", "gpu_util_pct"}
+        assert keys == {"temp_battery_c", "gpu_util_pct", "gpu_mem_mb"}
 
         events = store.fetch_events("run-supplement-1")
         assert any(event["kind"] == "supplement_degraded" for event in events)

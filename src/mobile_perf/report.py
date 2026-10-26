@@ -150,6 +150,7 @@ def build_report(
     jank_thresholds_ms: dict[str, float] | None = None,
     frames: dict[str, Any] | None = None,
     network: dict[str, Any] | None = None,
+    gpu: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典（JSON 与 HTML 共用）。
 
@@ -201,6 +202,10 @@ def build_report(
             "tier": "passthrough",
             "source": "mitmproxy",
         }
+    # GPU 双源（ticket 16）：记下实际生效的数据源与降级链，供报告与判读使用。
+    # 与 frames 一样只做补充，不改变 metricsSummary 的数值口径
+    if gpu is not None:
+        report["gpu"] = {**gpu, "source": "dumpsys_and_sysfs"}
     return report
 
 
@@ -363,6 +368,7 @@ th {{ background: #f2f4f8; }}
 {startup_markup}
 {jank_markup}
 {frame_markup}
+{gpu_markup}
 {network_markup}
 <h2>聚合统计</h2>
 <table>
@@ -455,6 +461,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         startup_markup=_startup_markup(report),
         jank_markup=_jank_markup(report),
         frame_markup=_frame_markup(report),
+        gpu_markup=_gpu_markup(report),
         network_markup=_network_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
@@ -474,14 +481,16 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
 
 _COMBINED_CHART_ID = "chart-combined-thermal-fps"
 
-# 温度-帧率同图：帧率走左轴，补采温度/GPU 走右轴，共用统一时间轴（§6.3）
+# 温度-帧率同图：帧率走左轴，补采曲线按**单位**分组各占一条右轴，共用统一
+# 时间轴（§6.3）。单位必须分组——把 °C、%、MB 挤在同一条轴上会让人误读量级。
 _COMBINED_SCRIPT = """<script>
 (function () {
   var report = window.__REPORT__ || {};
   var series = report.series || {};
   var startup = report.startup || null;
   var fps = series["fps_frame"];
-  var supplement = [series["temp_battery_c"], series["gpu_util_pct"]].filter(Boolean);
+  var supplement = [series["temp_battery_c"], series["gpu_util_pct"],
+                    series["gpu_mem_mb"]].filter(Boolean);
   if (!fps || supplement.length === 0 || typeof echarts === "undefined") return;
   var el = document.getElementById("__CHART_ID__");
   if (!el) return;
@@ -491,21 +500,26 @@ _COMBINED_SCRIPT = """<script>
     data: fps.points.map(function (p) { return [p[0], p[1]]; })
   }];
 __STARTUP_MARKLINE__
+  var axes = [{ type: "value", name: fps.unit }];
+  var axisByUnit = {};
+  axisByUnit[fps.unit] = 0;
   supplement.forEach(function (item) {
+    if (axisByUnit[item.unit] === undefined) {
+      axisByUnit[item.unit] = axes.length;
+      axes.push({ type: "value", name: item.unit });
+    }
     lines.push({
-      name: item.labelZh + " (" + item.unit + ")", type: "line", showSymbol: false, yAxisIndex: 1,
+      name: item.labelZh + " (" + item.unit + ")", type: "line", showSymbol: false,
+      yAxisIndex: axisByUnit[item.unit],
       data: item.points.map(function (p) { return [p[0], p[1]]; })
     });
   });
   chart.setOption({
-    title: { text: "温度-帧率同图（统一时间轴）", textStyle: { fontSize: 13 } },
+    title: { text: "温度-帧率-显存同图（统一时间轴）", textStyle: { fontSize: 13 } },
     tooltip: { trigger: "axis" },
     legend: { top: 22 },
     xAxis: { type: "value", name: "s" },
-    yAxis: [
-      { type: "value", name: fps.unit },
-      { type: "value", name: supplement[0].unit }
-    ],
+    yAxis: axes,
     series: lines,
     grid: { left: 60, right: 60, top: 60, bottom: 40 }
   });
@@ -516,11 +530,68 @@ __STARTUP_MARKLINE__
 def _combined_thermal_markup(series: dict[str, Any]) -> tuple[str, str]:
     """有帧率且有补采曲线时返回（同图 div，同图脚本）；否则返回空串。"""
     has_fps = "fps_frame" in series
-    has_supplement = "temp_battery_c" in series or "gpu_util_pct" in series
+    has_supplement = any(
+        key in series for key in ("temp_battery_c", "gpu_util_pct", "gpu_mem_mb")
+    )
     if not (has_fps and has_supplement):
         return "", ""
     div = f'<h2>温度-帧率同图</h2><div class="chart" id="{_COMBINED_CHART_ID}"></div>'
     return div, _COMBINED_SCRIPT.replace("__CHART_ID__", _COMBINED_CHART_ID)
+
+
+def _gpu_markup(report: dict[str, Any]) -> str:
+    """GPU 小节（工单 16）：利用率/显存的聚合值、实际数据源与降级链原因。
+
+    数据源必须写出来——`kgsl_gpubusy` 是驱动侧 ~1 s 窗口的累计值（窗口平均），
+    与 `dumpsys gpu` 的瞬时读数口径不同，混着看会得出错误结论。
+    """
+    summary = report.get("metricsSummary") or {}
+    gpu = report.get("gpu") or {}
+    rows = [
+        "<tr><td>{label}</td><td>{median}</td><td>{p90}</td><td>{max}</td>"
+        "<td>{count}</td><td>{unit}</td></tr>".format(
+            label=html_escape(_bilingual(entry.get("labelZh"), entry.get("labelEn"), key)),
+            median=_fmt(entry.get("median")),
+            p90=_fmt(entry.get("p90")),
+            max=_fmt(entry.get("max")),
+            count=entry.get("sampleCount", ""),
+            unit=html_escape(str(entry.get("unit") or "")),
+        )
+        for key in ("gpu_util_pct", "gpu_mem_mb")
+        if (entry := summary.get(key)) is not None
+    ]
+    degraded = [
+        item for item in (gpu.get("degraded") or [])
+        if item.get("key") in ("gpu_util_pct", "gpu_mem_mb")
+    ]
+    if not rows and not degraded:
+        return ""
+    source = gpu.get("gpuSource")
+    source_text = {
+        "kgsl_gpubusy": "kgsl <code>gpubusy</code> 窗口计数（窗口平均，非瞬时）",
+        "dumpsys_gpu": "<code>dumpsys gpu</code> 文本行（瞬时读数）",
+    }.get(source or "", "未取得")
+    parts = [
+        "<h2>GPU / GPU</h2>",
+        '<table class="gpu-stats"><tr><th>指标 / Metric</th><th>中位 / Median</th>'
+        "<th>P90</th><th>最大 / Max</th><th>样本 / Samples</th><th>单位 / Unit</th></tr>"
+        f"{''.join(rows)}</table>",
+        f"<p>数据源 / Source：{source_text}。"
+        "利用率与显存只报聚合（median/p90/max），不承诺逐点序列与真实瞬时负载对齐。</p>",
+    ]
+    if degraded:
+        items = "；".join(
+            f"{html_escape(str(item.get('key')))}（{html_escape(str(item.get('reason')))}"
+            + (
+                f"：{' → '.join(html_escape(str(s)) for s in item['stages'])}"
+                if item.get("stages")
+                else ""
+            )
+            + "）"
+            for item in degraded
+        )
+        parts.append(f"<p>⚠️ 降级项 / Degraded：{items}。降级项不产出 0 值指标。</p>")
+    return "".join(parts)
 
 
 def _startup_markline_script(report: dict[str, Any]) -> str:

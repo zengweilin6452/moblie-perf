@@ -587,3 +587,70 @@ def test_write_html_omits_network_section_without_network(tmp_path):
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
     assert "网络剖面" not in html
+
+
+# ---------- GPU 双源（ticket 16）：数据源、显存与降级链 ----------
+
+
+def _gpu_summary():
+    return {
+        "gpu_util_pct": {"unit": "%", "source": "pc_supplement", "min": 7.0,
+                         "median": 28.0, "mean": 25.0, "max": 35.0, "p90": 33.0,
+                         "sampleCount": 20, "labelZh": "GPU占用",
+                         "labelEn": "GPU utilization"},
+        "gpu_mem_mb": {"unit": "MB", "source": "pc_supplement", "min": 120.0,
+                       "median": 125.4, "mean": 125.0, "max": 130.0, "p90": 128.0,
+                       "sampleCount": 20, "labelZh": "应用GPU显存",
+                       "labelEn": "App GPU memory"},
+    }
+
+
+def test_write_html_renders_gpu_section_with_actual_source(tmp_path):
+    """数据源必须写出来：kgsl 是窗口平均、dumpsys 是瞬时，混看会误判。"""
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        metrics_summary=_gpu_summary(),
+        gpu={"enabled": True, "gpuSource": "kgsl_gpubusy", "degraded": []},
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "GPU / GPU" in html
+    assert "应用GPU显存" in html
+    assert "gpubusy" in html
+    assert "窗口平均" in html  # 口径限定：非瞬时值
+    assert "125.4" in html
+
+
+def test_write_html_gpu_section_shows_degradation_chain(tmp_path):
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        metrics_summary={},
+        gpu={
+            "enabled": True,
+            "gpuSource": None,
+            "degraded": [
+                {"key": "gpu_util_pct", "reason": "output_unparseable_or_unsupported",
+                 "stages": ["kgsl:kgsl_not_readable", "dumpsys:unparseable"]}
+            ],
+        },
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "降级项" in html
+    assert "kgsl:kgsl_not_readable" in html
+    assert "dumpsys:unparseable" in html
+    assert "不产出 0 值指标" in html
+
+
+def test_write_html_omits_gpu_section_without_gpu(tmp_path):
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "GPU / GPU" not in html
