@@ -573,18 +573,24 @@ class NetSession:
 
     @property
     def api_not_tested_reason(self) -> str | None:
-        """接口级指标不可用时的如实原因（含可执行下一步）；可用返回 None。"""
+        """接口级指标不可用时的如实原因（含可执行下一步）；可用返回 None。
+
+        ``TRUST_REJECTED`` 必须先于"未生效"判断：首个 CONNECT 就被证书拒绝时
+        addon 拿不到 ``tcp_start``（握手在 TLS 层就断了），``evidence`` 因此是
+        none。但拒绝本身就是代理确实在中间的证据——若先报"未观察到任何连接"，
+        会把最明确的原因说成"App 可能走缓存"，指错排查方向。
+        """
         if self.api_effective:
             return None
         if self.tier != TIER_DECRYPT:
             return "直通档不解密 TLS，接口级指标不可得（用 --net-tier decrypt 开启解密档）"
         if not self.applied:
             return self.setup_errors[0] if self.setup_errors else "网络剖面未施加"
-        if not self.effective:
-            return self.not_tested_reason
         if self.trust == TRUST_REJECTED:
             detail = f"（{self.trust_error}）" if self.trust_error else ""
             return f"被测 App 不信任代理 CA{detail}，本 run 不重试解密"
+        if not self.effective:
+            return self.not_tested_reason
         return "信任探测未取得结论：未观察到客户端 TLS 握手（App 可能走缓存或未发起请求）"
 
     @property
@@ -596,6 +602,12 @@ class NetSession:
             return None
         if self.note:
             return self.note
+        if self.trust == TRUST_REJECTED:
+            # 握手在 TLS 层就被拒绝，没有可测量的隧道；这不是"App 没发请求"
+            return (
+                "客户端 TLS 握手被证书拒绝，没有可测量的隧道（连接级指标为空）；"
+                "判定后已降为直通，后续新连接仍会计入"
+            )
         return (
             "代理侧日志未观察到任何连接：被测 App 可能走缓存/未发起网络请求，"
             "或代理未被系统代理设置覆盖（不能以页面能否打开判断，需检查设备代理设置）"

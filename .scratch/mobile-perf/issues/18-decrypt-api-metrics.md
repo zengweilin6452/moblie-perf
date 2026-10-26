@@ -69,3 +69,24 @@ CLI（`collect --net-tier`）。
   本 run 未遇到，但属已知边界。
 - 响应体只记大小不落内容（`raw_content` 仅取 `len`），不涉及敏感数据留存。
 - `net_tier` 尚未进 `sessions` 表与 trend 可比性过滤（工单 20）。
+
+### 2026-10-26 本机实证（设备离线，用本机 HTTPS 代替手机流量）
+
+在主机上真起 mitmdump（`MOBILE_PERF_NETTIER=decrypt`）并用 `urllib` 经它访问
+HTTPS，验证整条链路而不依赖设备：
+
+| 场景 | trust | apiRecords | api_effective | 结论 |
+|---|---|---|---|---|
+| 客户端信任代理 CA | trusted | 2 | true | 拿到 host/route/status/耗时/大小，聚合与瀑布图正确 |
+| 客户端用系统信任库 | rejected | 0 | false | 如实 not_tested，原因含 `tlsv1 alert unknown ca` |
+
+**实证暴露并修掉一个原因文案错误**：首个 CONNECT 就被证书拒绝时，握手在 TLS 层
+就断了，addon 拿不到 `tcp_start`，`evidence` 因此是 `none`。原实现先判"未生效"
+再判信任，于是把最明确的原因（证书被拒）说成"代理侧未观察到任何连接，App 可能
+走缓存"——指错排查方向。改为 `TRUST_REJECTED` 优先于"未生效"判断，并为连接级
+原因补一条专门文案（"握手被证书拒绝，没有可测量的隧道"）。新增回归用例
+`test_decrypt_session_rejected_without_any_tunnel_reports_cert_cause`。
+
+注意：本机实证用的是桌面 Python 的信任库，**不能替代** Android 真机结论——
+Android 上 targetSdk ≥24 的正式包只信系统 CA，预期同样落到 rejected 分支，
+但需设备回连后由 `test_decrypt_tier_degrades_honestly_on_untrusted_app` 确认。

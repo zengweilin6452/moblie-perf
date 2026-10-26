@@ -953,6 +953,41 @@ def test_decrypt_session_rejected_yields_no_api_values(tmp_path):
     assert netprof.conn_duration_rows(session.log_summary)
 
 
+def test_decrypt_session_rejected_without_any_tunnel_reports_cert_cause(tmp_path):
+    """回归：首个 CONNECT 就被证书拒绝时 addon 拿不到 tcp_start，evidence 是 none。
+
+    此时原因必须说"证书被拒绝"，不能说成"App 可能走缓存/未发起请求"——
+    后者会把最明确的原因说错，把排查引向错误方向。实测（本机 https 反证）
+    正是这个形状：trust=rejected、apiRecords=0、connections=0。
+    """
+    profiler = _profiler(FakeDevice(), tier=netprof.TIER_DECRYPT)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {
+                "ev": "trust_probe",
+                "ok": False,
+                "error": "The client does not trust the proxy's certificate for "
+                "example.com (tlsv1 alert unknown ca)",
+                "host": "example.com",
+            }
+        ],
+    )
+
+    session = profiler.stop()
+
+    assert session.evidence == netprof.EVIDENCE_NONE
+    assert session.effective is False
+    assert session.api_effective is False
+    assert "不信任代理 CA" in session.api_not_tested_reason
+    assert "unknown ca" in session.api_not_tested_reason
+    assert "未观察到任何连接" not in session.api_not_tested_reason
+    # 连接级指标的原因同样要指向证书，而不是"App 可能走缓存"
+    assert "证书拒绝" in session.not_tested_reason
+    assert "App 可能走缓存" not in session.not_tested_reason
+
+
 def test_passthrough_session_never_claims_trust(tmp_path):
     profiler = _profiler(FakeDevice())
     profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
