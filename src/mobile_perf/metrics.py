@@ -181,6 +181,19 @@ METRICS: dict[str, MetricSpec] = {
             "net_conn_duration_ms", "ms", "pc_supplement",
             "连接建立耗时", "Connection setup duration",
         ),
+        # 解密档接口级指标（ticket 18）：按 URL 去查询串后的路由聚合。
+        # api_req_duration_ms / api_payload_kb 是**逐请求**分布，
+        # api_req_count / api_error_rate_pct 是会话级单样本
+        MetricSpec(
+            "api_req_duration_ms", "ms", "pc_supplement",
+            "接口耗时", "API request duration",
+        ),
+        MetricSpec("api_req_count", "次", "pc_supplement", "接口请求数", "API request count"),
+        MetricSpec(
+            "api_error_rate_pct", "%", "pc_supplement",
+            "接口错误率", "API error rate",
+        ),
+        MetricSpec("api_payload_kb", "KB", "pc_supplement", "接口响应大小", "API payload size"),
         # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
         # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
         MetricSpec(

@@ -151,6 +151,7 @@ def build_report(
     frames: dict[str, Any] | None = None,
     network: dict[str, Any] | None = None,
     gpu: dict[str, Any] | None = None,
+    api: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把采集元数据、会话记录与产物清单聚合为报告字典（JSON 与 HTML 共用）。
 
@@ -197,11 +198,11 @@ def build_report(
     # 网络剖面（ticket 17）：档位是可比性维度，与逐帧/GPU 并列展示。
     # 只放已脱敏的结论（档位参数、证据、恢复结果），不含任何流量内容
     if network is not None:
-        report["network"] = {
-            **network,
-            "tier": "passthrough",
-            "source": "mitmproxy",
-        }
+        report["network"] = {**network, "source": "mitmproxy"}
+    # 接口级明细（ticket 18）：仅解密档且信任探测成功时有值。与连接级指标
+    # 分栏呈现——两者粒度不同（按 URL vs 按隧道），不可互相换算
+    if api is not None:
+        report["api"] = {**api, "source": "mitmproxy_decrypt"}
     # GPU 双源（ticket 16）：记下实际生效的数据源与降级链，供报告与判读使用。
     # 与 frames 一样只做补充，不改变 metricsSummary 的数值口径
     if gpu is not None:
@@ -370,6 +371,7 @@ th {{ background: #f2f4f8; }}
 {frame_markup}
 {gpu_markup}
 {network_markup}
+{api_markup}
 <h2>聚合统计</h2>
 <table>
 <tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
@@ -463,6 +465,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         frame_markup=_frame_markup(report),
         gpu_markup=_gpu_markup(report),
         network_markup=_network_markup(report),
+        api_markup=_api_markup(report),
         summary_rows="\n".join(summary_rows),
         chart_divs=combined_div + chart_divs,
         echarts_js=echarts_js,
@@ -741,6 +744,50 @@ def _frame_markup(report: dict[str, Any]) -> str:
     ).format(rows="\n".join(rows), detail=html_escape(detail_text))
 
 
+def _api_markup(report: dict[str, Any]) -> str:
+    """接口瀑布图（ticket 18）：Top N 慢接口 + 按域名分组。
+
+    排序用 P90 而非中位：慢接口的痛点在尾部，中位会把它抹平。表格里同时给出
+    请求数、中位、P90、最大、错误数与累计响应大小，避免只看一个数下结论。
+    """
+    api = report.get("api") or {}
+    top = api.get("top") or []
+    if not top:
+        return ""
+    rows = [
+        "<tr><td>{host}</td><td>{route}</td><td>{count}</td><td>{median}</td>"
+        "<td>{p90}</td><td>{max}</td><td>{errors}</td><td>{payload}</td></tr>".format(
+            host=html_escape(str(item.get("host") or "")),
+            route=html_escape(str(item.get("route") or "")),
+            count=item.get("count", ""),
+            median=_fmt(item.get("medianMs")),
+            p90=_fmt(item.get("p90Ms")),
+            max=_fmt(item.get("maxMs")),
+            errors=item.get("errors", 0),
+            payload=_fmt(item.get("payloadKb")),
+        )
+        for item in top
+    ]
+    by_host = api.get("byHost") or {}
+    host_text = "；".join(
+        f"{html_escape(str(host))}：{count} 次"
+        for host, count in sorted(by_host.items(), key=lambda pair: -pair[1])
+    )
+    return (
+        "<h2>接口瀑布图 / API waterfall</h2>"
+        '<table class="api-waterfall"><tr><th>域名 / Host</th><th>接口 / Route</th>'
+        "<th>请求数 / Count</th><th>中位 / Median (ms)</th><th>P90 (ms)</th>"
+        "<th>最大 / Max (ms)</th><th>错误 / Errors</th><th>响应 / Payload (KB)</th></tr>"
+        f"{''.join(rows)}</table>"
+        f"<p>按域名分组 / By host：{host_text}。"
+        f"共 {api.get('totalRoutes', len(top))} 个接口路由，错误 {api.get('errors', 0)} 次。"
+        "排序依据 P90（尾部耗时），不是中位。</p>"
+        "<p>⚠️ 与上方「网络剖面」的连接级指标口径不同：这里按 <strong>URL 路由</strong>"
+        "统计（同一隧道的多个请求各算一次），连接级指标按 <strong>TLS 隧道</strong>统计，"
+        "两者不可互相换算。</p>"
+    )
+
+
 def _network_markup(report: dict[str, Any]) -> str:
     """网络剖面小节（ticket 17）：档位参数 + 代理侧证据 + 恢复结果。
 
@@ -753,8 +800,10 @@ def _network_markup(report: dict[str, Any]) -> str:
     profile = network.get("profile") or {}
     proxy = network.get("proxy") or {}
     restored = network.get("restored") or {}
+    decrypt = network.get("tier") == "decrypt"
     rows = [
         ("档位 / Profile", profile.get("name") or ""),
+        ("模式 / Tier", "解密 / decrypt" if decrypt else "直通 / passthrough"),
         ("延迟 / Latency (ms)", _fmt(profile.get("latencyMs"))),
         ("下行 / Down (kbps)", _fmt(profile.get("downKbps"))),
         ("上行 / Up (kbps)", _fmt(profile.get("upKbps"))),
@@ -764,8 +813,14 @@ def _network_markup(report: dict[str, Any]) -> str:
         ("代理侧错误 / Proxy errors", _fmt(proxy.get("errors"))),
         ("生效 / Effective", "是 / yes" if network.get("effective") else "否 / no"),
     ]
+    if decrypt:
+        rows.append(("信任探测 / Trust probe", _trust_text(network.get("trust"))))
+        if network.get("trustError"):
+            rows.append(("证书错误 / Cert error", network["trustError"]))
     if network.get("notTestedReason"):
         rows.append(("未生效原因 / Reason", network["notTestedReason"]))
+    if network.get("apiNotTestedReason"):
+        rows.append(("接口级不可用 / API unavailable", network["apiNotTestedReason"]))
     if network.get("hint"):
         rows.append(("下一步 / Next step", network["hint"]))
     if restored:
@@ -779,14 +834,29 @@ def _network_markup(report: dict[str, Any]) -> str:
         f"<tr><td>{html_escape(name)}</td><td>{html_escape(str(value))}</td></tr>"
         for name, value in rows
     )
+    tier_note = (
+        "解密档 / decrypt：解 TLS 后同时产出连接级与接口级指标；接口级只在"
+        "信任探测成功时可用，否则如实 not_tested（不重试、不猜）。"
+        if decrypt
+        else "直通档 / passthrough：不解密 TLS，只产出连接级耗时与字节数，无 URL / 状态码。"
+    )
     return (
         "<h2>网络剖面 / Network profile</h2>"
         '<table class="net-profile"><tr><th>项 / Field</th><th>值 / Value</th></tr>'
         f"{body}</table>"
-        "<p>档位 / Tier：直通整形（不解密 TLS），只产出连接级耗时与字节数，"
-        "无 URL / 状态码。生效判定<strong>只看代理侧日志</strong>——被测 App 有本地"
+        f"<p>档位 / Tier：{tier_note}"
+        "生效判定<strong>只看代理侧日志</strong>——被测 App 有本地"
         "缓存与多域名兜底，页面能打开<strong>不</strong>代表代理生效。</p>"
     )
+
+
+def _trust_text(trust: Any) -> str:
+    """信任探测三态的展示文本（与 netprof.TRUST_* 一一对应）。"""
+    return {
+        "trusted": "成功 / trusted（App 信任代理 CA）",
+        "rejected": "证书不信任 / rejected（App 不信任代理 CA）",
+        "pending": "未取得结论 / pending（会话仍在进行）",
+    }.get(str(trust or ""), "未知 / unknown（未观察到客户端 TLS 握手）")
 
 
 def _jank_threshold_line_script(report: dict[str, Any]) -> str:

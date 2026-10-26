@@ -46,6 +46,11 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "gpu_mem_mb",
         # 弱网直通档（ticket 17，source=pc_supplement，代理侧连接耗时）
         "net_conn_duration_ms",
+        # 解密档接口级指标（ticket 18，source=pc_supplement）
+        "api_req_duration_ms",
+        "api_req_count",
+        "api_error_rate_pct",
+        "api_payload_kb",
         # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）
         "mem_pss_slope_mb_per_day",
     }

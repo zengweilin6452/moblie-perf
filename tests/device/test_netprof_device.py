@@ -135,3 +135,53 @@ def test_proxy_log_records_real_hosts_and_params(caller, tmp_path):
     assert session.log_summary.hosts, "代理侧未记录任何域名"
     assert session.log_summary.params["latencyMs"] == 200.0
     assert session.log_summary.conn_durations_ms
+
+
+def test_decrypt_tier_degrades_honestly_on_untrusted_app(caller, tmp_path):
+    """解密档真机（ticket 18）：targetSdk ≥24 的正式包不信任用户 CA。
+
+    期望**走降级分支**——接口级指标如实 not_tested、原因写明证书问题，
+    且连接级指标仍然有值（判定后自动降为直通）。这是正确行为而非缺陷。
+
+    若换到满足前置条件的组合（可写 system 分区的模拟器 + 系统 CA / debug 包
+    信任用户 CA / root 设备），本用例会走"有接口级数据"分支——两个分支都断言。
+    """
+    profile = netprof.build_profile("weak")
+    profiler = netprof.NetProfiler(
+        adb_path=str(bundled_adb_path()),
+        serial=DEVICE_SERIAL,
+        mitmdump=MITMDUMP,
+        port=PORT,
+        tier=netprof.TIER_DECRYPT,
+        call_device=caller,
+    )
+    work_dir = tmp_path / "net-decrypt"
+    try:
+        session = profiler.start(profile, work_dir=work_dir)
+        assert session.applied, session.setup_errors
+        _shell(caller, "am", "force-stop", TARGET_PACKAGE)
+        _shell(caller, "monkey", "-p", TARGET_PACKAGE, "1")
+        time.sleep(DRIVE_SECONDS)
+        _shell(caller, "input", "swipe", "540", "1600", "540", "600", "300")
+        time.sleep(3.0)
+    finally:
+        session = profiler.stop()
+
+    assert session.tier == netprof.TIER_DECRYPT
+    assert session.effective, session.not_tested_reason  # 代理确实在中间
+    # 连接级指标与信任结论无关：降级后隧道仍被观测到
+    assert session.log_summary.conn_durations_ms
+
+    if session.trust == netprof.TRUST_REJECTED:
+        assert session.api_effective is False
+        assert "不信任代理 CA" in session.api_not_tested_reason
+        assert session.log_summary.api_records == []  # 不产出任何接口数值
+        assert profiler.api_breakdown() is None
+    else:
+        # 满足前置条件的组合：接口级数据必须真的落地
+        assert session.trust == netprof.TRUST_OK, session.api_not_tested_reason
+        assert session.api_effective is True
+        assert session.log_summary.api_records
+        breakdown = profiler.api_breakdown()
+        assert breakdown["top"] and breakdown["byHost"]
+

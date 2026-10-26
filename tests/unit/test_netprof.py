@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -266,7 +267,7 @@ class FakeProcess:
         self.killed = True
 
 
-def _profiler(device, *, available=True, port_busy=False, process=None):
+def _profiler(device, *, available=True, port_busy=False, process=None, tier=None):
     """构造一个不真起进程的 profiler：端口探测按 port_busy 回答。"""
     state = {"busy": port_busy}
     popen_calls = []
@@ -276,6 +277,7 @@ def _profiler(device, *, available=True, port_busy=False, process=None):
         state["busy"] = True  # 起进程后端口变忙
         return process or FakeProcess()
 
+    extra = {"tier": tier} if tier is not None else {}
     profiler = netprof.NetProfiler(
         adb_path="adb",
         serial="s1",
@@ -287,6 +289,7 @@ def _profiler(device, *, available=True, port_busy=False, process=None):
         probe=lambda _p: "12.3.0" if available else None,
         which=lambda _n: None,
         in_use=lambda _port: state["busy"],
+        **extra,
     )
     profiler.popen_calls = popen_calls
     return profiler
@@ -613,6 +616,361 @@ def test_doctor_ignores_reverse_entries_for_other_ports():
     assert report["cleaned"] is False
 
 
+# ---------- 解密档与接口级指标（工单 18） ----------
+
+
+def test_analyze_log_trust_probe_records_first_conclusion_only():
+    """信任探测首个结论即定论：后续握手不得改写（addon 侧也只记一次）。"""
+    ok = netprof.analyze_proxy_log(
+        _lines({"t": 1.0, "ev": "trust_probe", "ok": True, "host": "api.test"})
+    )
+    rejected = netprof.analyze_proxy_log(
+        _lines(
+            {
+                "t": 1.0,
+                "ev": "trust_probe",
+                "ok": False,
+                "error": "tlsv1 alert unknown ca",
+                "host": "api.test",
+            },
+            {"t": 2.0, "ev": "trust_probe", "ok": True, "host": "api.test"},
+        )
+    )
+
+    assert ok.trust == netprof.TRUST_OK and ok.trust_error is None
+    assert rejected.trust == netprof.TRUST_REJECTED
+    assert rejected.trust_error == "tlsv1 alert unknown ca"
+    assert rejected.trust_host == "api.test"
+    # 没有探测事件 = 没有结论，不能当成"信任"
+    assert netprof.ProxyLogSummary().trust == netprof.TRUST_UNKNOWN
+
+
+def test_analyze_log_collects_api_records_and_connect_failures():
+    summary = netprof.analyze_proxy_log(
+        _lines(
+            {"ev": "http_connect", "host": "api.test", "port": 443},
+            {
+                "ev": "api_request",
+                "fid": "f1",
+                "host": "api.test",
+                "route": "GET /a",
+                "status": 200,
+                "durationMs": 120.5,
+                "sizeBytes": 2048,
+            },
+            {
+                "ev": "api_request",
+                "fid": "f2",
+                "host": "cdn.test",
+                "route": "POST /b",
+                "status": 503,
+                "durationMs": 30.0,
+                "sizeBytes": 0,
+            },
+            {"ev": "api_error", "host": "api.test", "error": "refused"},
+        )
+    )
+
+    assert [record.route for record in summary.api_records] == ["GET /a", "POST /b"]
+    assert summary.api_records[0].duration_ms == pytest.approx(120.5)
+    assert summary.api_records[0].size_bytes == 2048
+    assert summary.api_errors == 1
+    assert summary.hosts == ["api.test", "cdn.test"]  # 接口请求也贡献域名
+    assert summary.as_dict()["apiRequests"] == 2
+    assert summary.as_dict()["apiErrors"] == 1
+
+
+def test_analyze_log_api_traffic_counts_as_evidence():
+    """解密档没有 tcp_start（不解密才走 TCPLayer），明文请求本身即生效证据。"""
+    summary = netprof.analyze_proxy_log(
+        _lines(
+            {"ev": "http_connect", "host": "api.test", "port": 443},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {
+                "ev": "api_request",
+                "fid": "f1",
+                "host": "api.test",
+                "route": "GET /a",
+                "status": 200,
+                "durationMs": 10.0,
+                "sizeBytes": 1,
+            },
+        )
+    )
+
+    assert summary.connections == 0
+    assert summary.evidence == netprof.EVIDENCE_OBSERVED
+
+
+def _api_summary() -> netprof.ProxyLogSummary:
+    return netprof.analyze_proxy_log(
+        _lines(
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            *[
+                {
+                    "ev": "api_request",
+                    "fid": fid,
+                    "host": host,
+                    "route": route,
+                    "status": status,
+                    "durationMs": duration,
+                    "sizeBytes": size,
+                }
+                for fid, host, route, status, duration, size in (
+                    ("f1", "api.test", "GET /a", 200, 100.0, 1024),
+                    ("f2", "api.test", "GET /a", 200, 300.0, 2048),
+                    ("f3", "api.test", "GET /b", 500, 500.0, 0),
+                )
+            ],
+            {"ev": "api_error", "host": "api.test", "error": "refused"},
+        )
+    )
+
+
+def test_api_aggregates_uses_per_request_distribution():
+    """口径：逐请求样本（同 URL 多次各算一次），不是"每 URL 平均再取中位"。"""
+    rows = netprof.api_aggregates(_api_summary())
+    by_key = {row["metric_key"]: row for row in rows}
+
+    assert set(by_key) == set(netprof.API_METRIC_KEYS)
+    duration = by_key[netprof.METRIC_API_DURATION]
+    assert duration["sample_count"] == 3  # 三个请求，而非两个路由
+    assert duration["median"] == pytest.approx(300.0)
+    assert duration["p90"] == pytest.approx(460.0)  # 100/300/500 线性插值 0.9 位
+    assert duration["unit"] == "ms"
+    assert duration["source"] == "pc_supplement"
+    payload = by_key[netprof.METRIC_API_PAYLOAD]
+    assert payload["median"] == pytest.approx(1.0)  # 1KB / 2KB / 0KB
+    assert payload["unit"] == "KB"
+
+
+def test_api_aggregates_error_rate_counts_status_and_connect_failures():
+    """错误率分子 = 状态码 ≥400 的请求 + 连接失败（后者没有状态码，单独计数）。"""
+    by_key = {row["metric_key"]: row for row in netprof.api_aggregates(_api_summary())}
+
+    count = by_key[netprof.METRIC_API_COUNT]
+    assert count["median"] == pytest.approx(4.0)  # 3 次成功到达 + 1 次连接失败
+    assert count["sample_count"] == 1  # 会话级单样本
+    rate = by_key[netprof.METRIC_API_ERROR_RATE]
+    assert rate["median"] == pytest.approx(50.0)  # (1 个 500 + 1 个连接失败) / 4
+    assert rate["sample_count"] == 1
+
+
+def test_api_aggregates_empty_when_no_records():
+    """没有接口记录就不产出行——不拿 0 冒充"没有错误"或"没有流量"。"""
+    assert netprof.api_aggregates(netprof.ProxyLogSummary()) == []
+    only_errors = netprof.analyze_proxy_log(
+        _lines({"ev": "api_error", "host": "api.test", "error": "refused"})
+    )
+    assert netprof.api_aggregates(only_errors) == []
+
+
+def test_api_breakdown_sorts_by_p90_and_groups_by_host():
+    breakdown = netprof.api_breakdown(_api_summary())
+
+    assert breakdown["totalRoutes"] == 2
+    assert [item["route"] for item in breakdown["top"]] == ["GET /b", "GET /a"]  # P90 降序
+    slowest = breakdown["top"][0]
+    assert slowest["host"] == "api.test"
+    assert slowest["count"] == 1 and slowest["errors"] == 1
+    fast = breakdown["top"][1]
+    assert fast["count"] == 2  # 同一路由两次请求合成一组
+    assert fast["medianMs"] == pytest.approx(200.0)
+    assert fast["p90Ms"] == pytest.approx(280.0)  # 100/300 线性插值 0.9 位
+    assert fast["maxMs"] == pytest.approx(300.0)
+    assert fast["payloadKb"] == pytest.approx(3.0)
+    assert breakdown["byHost"] == {"api.test": 3}
+    # 错误总数 = 连接失败 1 + 状态码错误 1
+    assert breakdown["errors"] == 2
+
+
+def test_api_breakdown_respects_top_n():
+    summary = netprof.analyze_proxy_log(
+        _lines(
+            *[
+                {
+                    "ev": "api_request",
+                    "host": "api.test",
+                    "route": f"GET /p{i}",
+                    "status": 200,
+                    "durationMs": float(i),
+                    "sizeBytes": 0,
+                }
+                for i in range(1, 6)
+            ],
+        )
+    )
+
+    breakdown = netprof.api_breakdown(summary, top_n=2)
+
+    assert len(breakdown["top"]) == 2
+    assert breakdown["totalRoutes"] == 5
+    assert [item["route"] for item in breakdown["top"]] == ["GET /p5", "GET /p4"]
+
+
+def _session(**kwargs) -> netprof.NetSession:
+    defaults = {
+        "tier": netprof.TIER_DECRYPT,
+        "applied": True,
+        "evidence": netprof.EVIDENCE_OBSERVED,
+    }
+    return netprof.NetSession(**{**defaults, **kwargs})
+
+
+def test_api_effective_requires_decrypt_tier_and_trusted_probe():
+    assert _session(trust=netprof.TRUST_OK).api_effective is True
+    assert _session(tier=netprof.TIER_PASSTHROUGH, trust=netprof.TRUST_OK).api_effective is False
+    assert _session(trust=netprof.TRUST_REJECTED).api_effective is False
+    assert _session(trust=netprof.TRUST_UNKNOWN).api_effective is False
+    assert _session(trust=netprof.TRUST_PENDING).api_effective is False
+
+
+def test_api_not_tested_reason_covers_each_branch_with_next_step():
+    passthrough = _session(tier=netprof.TIER_PASSTHROUGH, trust=netprof.TRUST_UNKNOWN)
+    rejected = _session(trust=netprof.TRUST_REJECTED, trust_error="tlsv1 alert unknown ca")
+    pending = _session(trust=netprof.TRUST_PENDING)
+    not_applied = _session(applied=False, setup_errors=["mitmproxy 不可用"])
+    no_traffic = _session(evidence=netprof.EVIDENCE_NONE)
+
+    assert _session(trust=netprof.TRUST_OK).api_not_tested_reason is None
+    assert "直通档不解密 TLS" in passthrough.api_not_tested_reason
+    assert "--net-tier decrypt" in passthrough.api_not_tested_reason
+    assert "不信任代理 CA" in rejected.api_not_tested_reason
+    assert "tlsv1 alert unknown ca" in rejected.api_not_tested_reason
+    assert "不重试" in rejected.api_not_tested_reason
+    assert "未取得结论" in pending.api_not_tested_reason
+    assert not_applied.api_not_tested_reason == "mitmproxy 不可用"
+    assert "代理侧日志未观察到任何连接" in no_traffic.api_not_tested_reason
+
+
+def test_trust_hint_lists_executable_next_steps():
+    """not_tested 原因之外还要给出可执行的下一步（换包 / root / 模拟器）。"""
+    assert "debug" in netprof.TRUST_HINT
+    assert "root" in netprof.TRUST_HINT
+    assert "writable-system" in netprof.TRUST_HINT
+
+
+def test_profiler_rejects_unknown_tier():
+    with pytest.raises(ValueError, match="未知弱网档位模式"):
+        netprof.NetProfiler(adb_path="adb", serial="s1", tier="mitm")
+
+
+def test_decrypt_tier_passes_tier_to_addon_environment(tmp_path):
+    profiler = _profiler(FakeDevice(), tier=netprof.TIER_DECRYPT)
+
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    assert profiler.popen_calls[0][1]["env"]["MOBILE_PERF_NETTIER"] == "decrypt"
+
+
+def test_passthrough_tier_is_the_default_addon_environment(tmp_path):
+    profiler = _profiler(FakeDevice())
+
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    assert profiler.popen_calls[0][1]["env"]["MOBILE_PERF_NETTIER"] == "passthrough"
+
+
+def test_decrypt_tier_none_profile_still_requires_proxy(tmp_path):
+    """解密档即使 none 档位也不能省代理——否则接口级指标没有数据来源。"""
+    device = FakeDevice()
+    profiler = _profiler(device, available=False, tier=netprof.TIER_DECRYPT)
+
+    session = profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+
+    assert session.applied is False
+    assert "mitmproxy" in session.setup_errors[0]
+    assert device.calls == []
+
+
+def _write_log(tmp_path, records) -> None:
+    (tmp_path / netprof.LOG_FILENAME).write_text(
+        "\n".join(_lines(*records)) + "\n", encoding="utf-8"
+    )
+
+
+def test_decrypt_session_trusted_yields_api_rows_and_breakdown(tmp_path):
+    profiler = _profiler(FakeDevice(), tier=netprof.TIER_DECRYPT)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {
+                "ev": "api_request",
+                "fid": "f1",
+                "host": "api.test",
+                "route": "GET /a",
+                "status": 200,
+                "durationMs": 250.0,
+                "sizeBytes": 4096,
+            },
+        ],
+    )
+
+    session = profiler.stop()
+
+    assert session.trust == netprof.TRUST_OK
+    assert session.api_effective is True
+    assert session.as_dict()["apiEffective"] is True
+    assert [row["metric_key"] for row in profiler.api_aggregates()] == list(
+        netprof.API_METRIC_KEYS
+    )
+    breakdown = profiler.api_breakdown()
+    assert breakdown["top"][0]["route"] == "GET /a"
+    assert breakdown["top"][0]["p90Ms"] == pytest.approx(250.0)
+
+
+def test_decrypt_session_rejected_yields_no_api_values(tmp_path):
+    """证书不信任：不重试、不产出任何 api_* 数值，但连接级指标仍可用。"""
+    profiler = _profiler(FakeDevice(), tier=netprof.TIER_DECRYPT)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {
+                "ev": "trust_probe",
+                "ok": False,
+                "error": "tlsv1 alert unknown ca",
+                "host": "api.test",
+            },
+            # 判定之后 addon 降为直通，连接级证据照旧
+            {"ev": "tcp_start", "fid": "f9", "host": "api.test", "port": 443},
+            {"ev": "tcp_message", "fid": "f9", "from_client": True, "size": 10},
+        ],
+    )
+
+    session = profiler.stop()
+
+    assert session.trust == netprof.TRUST_REJECTED
+    assert session.api_effective is False
+    assert "不信任代理 CA" in session.api_not_tested_reason
+    assert profiler.api_aggregates() == []
+    assert profiler.api_breakdown() is None
+    # 连接级指标不受影响
+    assert session.effective is True
+    assert netprof.conn_duration_rows(session.log_summary)
+
+
+def test_passthrough_session_never_claims_trust(tmp_path):
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},  # 直通档不该有这条
+            {"ev": "tcp_start", "fid": "f1", "host": "api.test", "port": 443},
+        ],
+    )
+
+    session = profiler.stop()
+
+    assert session.trust == netprof.TRUST_UNKNOWN
+    assert session.api_effective is False
+    assert profiler.api_breakdown() is None
+
+
 # ---------- 真实 mitmproxy 集成（可选：未装则跳过） ----------
 
 
@@ -766,6 +1124,204 @@ def _addon_delays(params: dict, cases: list[tuple[int, bool]]) -> list[float]:
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+_ADDON_PREAMBLE = """
+import importlib.util, json, sys, types
+spec = importlib.util.spec_from_file_location('addon', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+class Marker:
+    def __init__(self, context):
+        self.context = context
+
+mod.TCPLayer = Marker  # 不真建 mitmproxy 层，只看"是否被改成裸 TCP"
+
+def ctx(cid='c1', host='api.test'):
+    server = types.SimpleNamespace(address=(host, 443) if host else None)
+    client = types.SimpleNamespace(id=cid)
+    return types.SimpleNamespace(
+        server=server, client=client, layers=[], options=types.SimpleNamespace()
+    )
+
+def layer_name(layer):
+    return None if layer is None else type(layer).__name__
+
+out = {}
+"""
+
+
+def _addon_probe(body: str, *, tier: str, params: dict | None = None) -> dict:
+    """在 mitmdump 的解释器里加载真实 addon 并执行给定脚本体，返回其 ``out``。
+
+    走子进程是唯一可行路径：addon 顶部 import mitmproxy，而主进程环境是
+    Python 3.10（mitmproxy 要求 ≥3.12）。这也正是它在生产里的运行方式。
+    """
+    python = _addon_python()
+    if python is None:
+        pytest.skip("找不到 mitmdump 同目录的解释器")
+    addon = Path(netprof.__file__).resolve().parent / netprof.ADDON_FILENAME
+    code = _ADDON_PREAMBLE + body + "\nprint(json.dumps(out))\n"
+    with tempfile.TemporaryDirectory() as work:
+        log = Path(work) / "net_proxy.jsonl"
+        log.touch()  # 一条事件都没产生时 addon 不会建文件，先占位便于统一读取
+        environment = {
+            **os.environ,
+            "MOBILE_PERF_NETPARAMS": json.dumps(params or {}),
+            "MOBILE_PERF_NETTIER": tier,
+            "MOBILE_PERF_NETLOG": str(log),
+        }
+        result = subprocess.run(
+            [python, "-c", code, str(addon)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        out = json.loads(result.stdout.strip().splitlines()[-1])
+        out["log"] = [
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+    return out
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_decrypt_tier_keeps_tls_layer_when_handshake_succeeds():
+    out = _addon_probe(
+        """
+data = types.SimpleNamespace(context=ctx(), layer=None)
+mod.tls_established_client(data)
+mod._TUNNEL_CLIENTS.add('c1')
+mod.next_layer(data)
+out['layer'] = layer_name(data.layer)
+out['decryptOk'] = mod._DECRYPT_OK
+""",
+        tier="decrypt",
+    )
+
+    assert out["decryptOk"] is True
+    assert out["layer"] is None  # 放行给 mitmproxy 的 TLS 层（不解密就没有接口级数据）
+    probes = [r for r in out["log"] if r["ev"] == "trust_probe"]
+    assert len(probes) == 1 and probes[0]["ok"] is True
+    assert probes[0]["host"] == "api.test"
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_cert_rejection_locks_tier_and_falls_back_to_passthrough():
+    """证书不信任 → 判定一次即锁定，后续 CONNECT 降为裸 TCP（保住连接级指标）。"""
+    out = _addon_probe(
+        """
+mod._TUNNEL_CLIENTS.add('c1')
+first = types.SimpleNamespace(
+    context=ctx(),
+    conn=types.SimpleNamespace(error='tlsv1 alert unknown ca'),
+)
+mod.tls_failed_client(first)
+mod.tls_failed_client(first)  # 再来一次握手：不得重复判定
+out['decryptOk'] = mod._DECRYPT_OK
+data = types.SimpleNamespace(context=ctx(), layer=None)
+mod.next_layer(data)
+out['layer'] = layer_name(data.layer)
+""",
+        tier="decrypt",
+    )
+
+    assert out["decryptOk"] is False
+    assert out["layer"] == "Marker"  # 已降为裸 TCP
+    probes = [r for r in out["log"] if r["ev"] == "trust_probe"]
+    assert len(probes) == 1  # 只判定一次，不重试
+    assert probes[0]["ok"] is False
+    assert probes[0]["certRejected"] is True
+    assert "unknown ca" in probes[0]["error"]
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_non_cert_tls_failure_does_not_lock_tier():
+    """非证书类失败不是"App 不信任"的证据，不得锁定本 run 的解密能力。"""
+    out = _addon_probe(
+        """
+mod._TUNNEL_CLIENTS.add('c1')
+data = types.SimpleNamespace(
+    context=ctx(),
+    conn=types.SimpleNamespace(error='connection reset by peer'),
+)
+mod.tls_failed_client(data)
+out['decryptOk'] = mod._DECRYPT_OK
+layer = types.SimpleNamespace(context=ctx(), layer=None)
+mod.next_layer(layer)
+out['layer'] = layer_name(layer.layer)
+""",
+        tier="decrypt",
+    )
+
+    assert out["decryptOk"] is None  # 仍未判定，下次握手还能试
+    assert out["layer"] is None  # 仍然走解密
+    assert not [r for r in out["log"] if r["ev"] == "trust_probe"]
+    errors = [r for r in out["log"] if r["ev"] == "tls_client_error"]
+    assert errors and "connection reset" in errors[0]["error"]
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_passthrough_tier_never_decrypts():
+    out = _addon_probe(
+        """
+mod._TUNNEL_CLIENTS.add('c1')
+data = types.SimpleNamespace(context=ctx(), layer=None)
+mod.next_layer(data)
+out['layer'] = layer_name(data.layer)
+mod.tls_established_client(types.SimpleNamespace(context=ctx()))
+out['decryptOk'] = mod._DECRYPT_OK
+""",
+        tier="passthrough",
+    )
+
+    assert out["layer"] == "Marker"  # 强制裸 TCP
+    assert out["decryptOk"] is None  # 直通档不探测信任
+    assert not [r for r in out["log"] if r["ev"] == "trust_probe"]
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_response_emits_api_record_without_query_string():
+    """接口明细：路由去掉查询串（否则 id/时间戳会把同一接口打散）。"""
+    out = _addon_probe(
+        """
+request = types.SimpleNamespace(
+    host='api.test', method='GET', path='/v1/list?page=2&ts=123', timestamp_start=100.0
+)
+resp = types.SimpleNamespace(
+    status_code=200, timestamp_end=100.25, raw_content=b'x' * 1024
+)
+mod.response(types.SimpleNamespace(request=request, response=resp, id='f1'))
+""",
+        tier="decrypt",
+    )
+
+    records = [r for r in out["log"] if r["ev"] == "api_request"]
+    assert len(records) == 1
+    assert records[0]["route"] == "GET /v1/list"
+    assert records[0]["status"] == 200
+    assert records[0]["durationMs"] == pytest.approx(250.0)
+    assert records[0]["sizeBytes"] == 1024
+
+
+@pytest.mark.skipif(MITMDUMP is None, reason="本机无可用 mitmdump（Python ≥3.12 独立 venv）")
+def test_addon_passthrough_tier_emits_no_api_records():
+    out = _addon_probe(
+        """
+request = types.SimpleNamespace(
+    host='api.test', method='GET', path='/a', timestamp_start=100.0
+)
+resp = types.SimpleNamespace(status_code=200, timestamp_end=100.1, raw_content=b'')
+mod.response(types.SimpleNamespace(request=request, response=resp, id='f1'))
+""",
+        tier="passthrough",
+    )
+
+    assert not [r for r in out["log"] if r["ev"] == "api_request"]
 
 
 def _free_port() -> int:

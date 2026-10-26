@@ -96,6 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
             "--net-loss 四项"
         ),
     )
+    collect_parser.add_argument(
+        "--net-tier",
+        choices=netprof.TIER_NAMES,
+        default=netprof.TIER_PASSTHROUGH,
+        help=(
+            "弱网档位模式（ticket 18）：passthrough=不解密（默认，连接级指标）；"
+            "decrypt=解 TLS 拿接口级指标。解密档先探测 App 是否信任代理 CA，"
+            "不信任则接口级指标如实 not_tested，不重试"
+        ),
+    )
     collect_parser.add_argument("--net-latency", type=float, help="自定义延迟 ms")
     collect_parser.add_argument("--net-down", type=float, help="自定义下行 kbps")
     collect_parser.add_argument("--net-up", type=float, help="自定义上行 kbps")
@@ -272,6 +282,7 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
             net_profile=net_profile,
             net_overrides=net_overrides,
             net_mitmdump=args.net_mitmdump,
+            net_tier=args.net_tier,
             net_port=args.net_port,
         )
     except CollectError as exc:

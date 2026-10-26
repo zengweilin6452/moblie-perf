@@ -157,6 +157,7 @@ class CollectScope:
         frame_poll: bool = False,
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
         net_profile: netprof_module.NetProfile | None = None,
+        net_tier: str = netprof_module.TIER_PASSTHROUGH,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
     ):
@@ -169,6 +170,7 @@ class CollectScope:
         self._frame_poll = frame_poll
         self._frame_interval_s = frame_interval_s
         self._net_profile = net_profile
+        self._net_tier = net_tier
         self._net_mitmdump = net_mitmdump
         self._net_port = net_port
         self._net_profiler: netprof_module.NetProfiler | None = None
@@ -211,7 +213,11 @@ class CollectScope:
         # 情况不抛错——如实降级，由 finalize 落 not_tested 原因与事件
         if self._net_profile is not None:
             self._net_profiler = kit._start_net_profile(
-                self._net_profile, self._run_dir, self._net_mitmdump, self._net_port
+                self._net_profile,
+                self._run_dir,
+                self._net_mitmdump,
+                self._net_port,
+                self._net_tier,
             )
         self._session = CollectSession(
             target=self.target,
@@ -391,7 +397,9 @@ class CollectScope:
         # 弱网连接级耗时（ticket 17）：只有代理侧日志真的看到连接才有值；
         # 未生效时不出数，由下方 not_tested 标注与事件说明原因
         net_aggregates: list[dict[str, Any]] = []
+        api_aggregates: list[dict[str, Any]] = []
         net_meta: dict[str, Any] | None = None
+        api_breakdown: dict[str, Any] | None = None
         if net_session is not None:
             net_meta = net_session.as_dict()
             if net_session.effective:
@@ -399,12 +407,21 @@ class CollectScope:
                 net_meta["connSamples"] = len(net_session.log_summary.conn_durations_ms)
             elif net_session.applied:
                 net_meta["connSamples"] = 0
+            # 接口级指标（ticket 18）：只有解密档且信任探测成功才有值。
+            # 与连接级指标分开入库、报告分栏——两套口径不混算
+            if self._net_profiler is not None and net_session.api_effective:
+                api_aggregates = self._net_profiler.api_aggregates()
+                api_breakdown = self._net_profiler.api_breakdown()
+                net_meta["apiSamples"] = len(net_session.log_summary.api_records)
+            elif net_session.tier == netprof_module.TIER_DECRYPT:
+                net_meta["apiSamples"] = 0
         merged_aggregates = (
             aggregates
             + supplement_aggregates
             + jank_aggregates
             + frame_aggregates
             + net_aggregates
+            + api_aggregates
         )
         # 启动编排结论（ticket 12）：ms 为单样本指标（聚合字段填单值），
         # 双路对照与失败明细随事件/meta 如实入库
@@ -463,6 +480,23 @@ class CollectScope:
                 metrics_summary[netprof_module.METRIC_CONN_DURATION]["hint"] = (
                     net_session.hint
                 )
+        # 接口级指标不可用（直通档 / App 不信任代理 CA / 未观察到握手）时同样
+        # 如实 not_tested：四个 key 一起标，原因写清并给出可执行的下一步。
+        # 绝不因为"拿不到"就留空，让人误以为接口没问题
+        if (
+            net_meta is not None
+            and net_session is not None
+            and not net_session.api_effective
+        ):
+            for key in netprof_module.API_METRIC_KEYS:
+                metrics_summary[key] = {
+                    "notTested": True,
+                    "notTestedReason": net_session.api_not_tested_reason,
+                }
+            if net_session.tier == netprof_module.TIER_DECRYPT:
+                metrics_summary[netprof_module.METRIC_API_DURATION]["hint"] = (
+                    netprof_module.TRUST_HINT
+                )
 
         meta = {
             "runId": self._run_id,
@@ -505,6 +539,7 @@ class CollectScope:
             jank_thresholds_ms=self._jank_thresholds_ms,
             frames=frame_meta,
             network=net_meta,
+            api=api_breakdown,
             # GPU 双源（ticket 16）：数据源与降级链随报告落盘，报告据此标注口径
             gpu=(
                 {
@@ -585,6 +620,25 @@ class CollectScope:
                 detail={
                     **net_meta,
                     "connSamples": net_meta.get("connSamples", 0),
+                },
+            )
+        # 解密档信任探测（ticket 18）：单独一条事件，便于不翻 meta 就能看出
+        # "这次为什么没有接口级数据"。成功记 decrypt_available，失败记
+        # decrypt_unavailable（含证书错误原文与可执行的下一步）
+        if net_meta is not None and net_session.tier == netprof_module.TIER_DECRYPT:
+            store.record_event(
+                self._run_id,
+                kind=(
+                    "net_profile_decrypt_available"
+                    if net_session.api_effective
+                    else "net_profile_decrypt_unavailable"
+                ),
+                detail={
+                    "trust": net_session.trust,
+                    "trustError": net_session.trust_error,
+                    "reason": net_session.api_not_tested_reason,
+                    "hint": netprof_module.TRUST_HINT,
+                    "apiSamples": net_meta.get("apiSamples", 0),
                 },
             )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
@@ -1072,18 +1126,21 @@ class PerfKit:
         run_dir: Path,
         mitmdump: str | None,
         port: int,
+        tier: str = netprof_module.TIER_PASSTHROUGH,
     ) -> netprof_module.NetProfiler:
         """施加网络剖面（采集窗口之前）：代理 → reverse → 系统代理。
 
         失败不抛错：``NetSession`` 里带着原因，finalize 据此把
         ``net_conn_duration_ms`` 标 not_tested 并落事件。代理日志与 stdout
         落在 run 目录下（artifacts 之外），便于事后核查代理是否真的看到流量。
+        ``tier=decrypt`` 时额外产出接口级指标（工单 18）。
         """
         profiler = netprof_module.NetProfiler(
             adb_path=str(self.adb_path),
             serial=self.serial,
             mitmdump=mitmdump,
             port=port,
+            tier=tier,
             call_device=self._channel,
         )
         profiler.start(profile, work_dir=run_dir / "network")
@@ -1213,6 +1270,7 @@ class PerfKit:
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
         net_profile: str | netprof_module.NetProfile | None = None,
         net_overrides: dict[str, float] | None = None,
+        net_tier: str = netprof_module.TIER_PASSTHROUGH,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
     ) -> CollectScope:
@@ -1280,6 +1338,7 @@ class PerfKit:
             frame_poll=frame_poll,
             frame_interval_s=frame_interval_s,
             net_profile=resolved_profile,
+            net_tier=net_tier,
             net_mitmdump=net_mitmdump,
             net_port=net_port,
         )
@@ -1300,6 +1359,7 @@ class PerfKit:
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
         net_profile: str | netprof_module.NetProfile | None = None,
         net_overrides: dict[str, float] | None = None,
+        net_tier: str = netprof_module.TIER_PASSTHROUGH,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
     ) -> dict[str, Any]:
@@ -1336,6 +1396,7 @@ class PerfKit:
             frame_interval_s=frame_interval_s,
             net_profile=net_profile,
             net_overrides=net_overrides,
+            net_tier=net_tier,
             net_mitmdump=net_mitmdump,
             net_port=net_port,
         ) as scope:

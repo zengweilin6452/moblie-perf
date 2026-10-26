@@ -210,6 +210,123 @@ def test_collect_net_profile_restores_device_even_when_body_raises(tmp_path, mon
     assert any(c.endswith("reverse --remove tcp:8080") for c in commands)
 
 
+DECRYPT_TRAFFIC = [
+    {"t": 1.0, "ev": "trust_probe", "ok": True, "host": "api.test"},
+    {"t": 1.1, "ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+    {
+        "t": 1.2,
+        "ev": "api_request",
+        "fid": "f1",
+        "host": "api.test",
+        "route": "GET /a",
+        "status": 200,
+        "durationMs": 180.0,
+        "sizeBytes": 2048,
+    },
+    {
+        "t": 1.3,
+        "ev": "api_request",
+        "fid": "f2",
+        "host": "api.test",
+        "route": "GET /a",
+        "status": 500,
+        "durationMs": 620.0,
+        "sizeBytes": 0,
+    },
+]
+
+REJECTED_TRAFFIC = [
+    {
+        "t": 1.0,
+        "ev": "trust_probe",
+        "ok": False,
+        "error": "tlsv1 alert unknown ca",
+        "host": "api.test",
+    },
+    {"t": 1.5, "ev": "tcp_start", "fid": "f9", "host": "api.test", "port": 443},
+    {"t": 1.9, "ev": "tcp_message", "fid": "f9", "from_client": True, "size": 64},
+]
+
+
+def test_collect_decrypt_tier_ingests_api_metrics_and_breakdown(tmp_path, monkeypatch):
+    """信任探测成功 → 4 个 api_* 进 metricsSummary、报告分栏、事件记 available。"""
+    _patch_profiler(monkeypatch, DECRYPT_TRAFFIC)
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=_device_call())
+
+    report = _collect(kit, tmp_path, "run-api-1", net_profile="weak", net_tier="decrypt")
+
+    summary = report["metricsSummary"]
+    assert summary["api_req_duration_ms"]["median"] == pytest.approx(400.0)  # 180/620 中位
+    assert summary["api_req_duration_ms"]["sampleCount"] == 2
+    assert summary["api_req_count"]["median"] == pytest.approx(2.0)
+    assert summary["api_error_rate_pct"]["median"] == pytest.approx(50.0)
+    assert summary["api_payload_kb"]["median"] == pytest.approx(1.0)
+    assert report["network"]["tier"] == "decrypt"
+    assert report["network"]["trust"] == "trusted"
+    assert report["network"]["apiEffective"] is True
+    assert report["network"]["apiSamples"] == 2
+    # 接口级明细单独一栏，与连接级分栏呈现
+    assert report["api"]["source"] == "mitmproxy_decrypt"
+    assert report["api"]["top"][0]["route"] == "GET /a"
+    assert report["api"]["top"][0]["count"] == 2
+    events = [e for e in report["events"] if e["kind"] == "net_profile_decrypt_available"]
+    assert events and events[0]["detail"]["trust"] == "trusted"
+
+
+def test_collect_decrypt_tier_rejected_marks_api_not_tested_with_next_step(
+    tmp_path, monkeypatch
+):
+    """证书不信任：4 个 api_* 全 not_tested + 可执行下一步，连接级指标照旧有值。"""
+    _patch_profiler(monkeypatch, REJECTED_TRAFFIC)
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=_device_call())
+
+    report = _collect(kit, tmp_path, "run-api-2", net_profile="weak", net_tier="decrypt")
+
+    summary = report["metricsSummary"]
+    for key in ("api_req_duration_ms", "api_req_count", "api_error_rate_pct", "api_payload_kb"):
+        assert summary[key]["notTested"] is True
+        assert "不信任代理 CA" in summary[key]["notTestedReason"]
+    assert "root" in summary["api_req_duration_ms"]["hint"]
+    assert "debug" in summary["api_req_duration_ms"]["hint"]
+    assert "api" not in report  # 报告不渲染接口瀑布图
+    # 连接级指标不受影响：降为直通后隧道仍被观测到
+    assert summary["net_conn_duration_ms"]["median"] == pytest.approx(400.0)
+    events = [e for e in report["events"] if e["kind"] == "net_profile_decrypt_unavailable"]
+    assert events and events[0]["detail"]["trust"] == "rejected"
+    assert "unknown ca" in events[0]["detail"]["trustError"]
+
+
+def test_collect_passthrough_tier_marks_api_not_tested_without_hint(
+    tmp_path, monkeypatch
+):
+    """直通档默认标 not_tested，原因指向 --net-tier decrypt，不给证书安装提示。"""
+    _patch_profiler(monkeypatch, TRAFFIC)
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=_device_call())
+
+    report = _collect(kit, tmp_path, "run-api-3", net_profile="weak")
+
+    entry = report["metricsSummary"]["api_req_duration_ms"]
+    assert entry["notTested"] is True
+    assert "--net-tier decrypt" in entry["notTestedReason"]
+    assert "hint" not in entry  # 直通档不是信任问题，不误导去装 CA
+    assert "api" not in report
+    assert not [e for e in report["events"] if e["kind"].startswith("net_profile_decrypt")]
+
+
+def test_api_metrics_do_not_pollute_solopi_network_metrics(tmp_path, monkeypatch):
+    """两套口径独立入库：api_* 不改变 SoloPi 端侧网络指标，也不混算连接耗时。"""
+    _patch_profiler(monkeypatch, DECRYPT_TRAFFIC)
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=_device_call())
+
+    report = _collect(kit, tmp_path, "run-api-4", net_profile="weak", net_tier="decrypt")
+
+    summary = report["metricsSummary"]
+    # 解密档没有 tcp_start，连接级耗时不得由接口级明细伪造出来
+    assert "net_conn_duration_ms" not in summary
+    # SoloPi 端侧网络指标来自 CSV，与本 run 的接口级明细无关
+    assert not any(key.startswith("net_rx") or key.startswith("net_tx") for key in summary)
+
+
 def test_collect_rejects_unknown_net_profile_early(tmp_path):
     """档位非法在 collect 前就失败——不带着错误网络条件去跑采集。"""
     kit = make_kit(tmp_path, FakeHarnessBackend())

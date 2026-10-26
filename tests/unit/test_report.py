@@ -514,6 +514,7 @@ def _network_meta(**overrides):
     meta = {
         "profile": {"name": "weak", "latencyMs": 400.0, "downKbps": 400.0,
                     "upKbps": 200.0, "lossPct": 2.0},
+        "tier": "passthrough",
         "applied": True,
         "effective": True,
         "evidence": "observed",
@@ -654,3 +655,117 @@ def test_write_html_omits_gpu_section_without_gpu(tmp_path):
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
     assert "GPU / GPU" not in html
+
+
+# ---------- 解密档与接口瀑布图（ticket 18） ----------
+
+
+def _api_breakdown():
+    return {
+        "top": [
+            {"host": "api.trainapp.com", "route": "POST /v1/login", "count": 3,
+             "medianMs": 620.0, "p90Ms": 980.0, "maxMs": 1100.0, "errors": 1,
+             "payloadKb": 12.5},
+            {"host": "cdn.trainapp.com", "route": "GET /static/app.js", "count": 1,
+             "medianMs": 45.0, "p90Ms": 45.0, "maxMs": 45.0, "errors": 0,
+             "payloadKb": 220.0},
+        ],
+        "totalRoutes": 7,
+        "byHost": {"api.trainapp.com": 5, "cdn.trainapp.com": 2},
+        "errors": 1,
+    }
+
+
+def _decrypt_meta(**overrides):
+    return _network_meta(
+        tier="decrypt",
+        trust="trusted",
+        trustError=None,
+        apiEffective=True,
+        apiNotTestedReason=None,
+        **overrides,
+    )
+
+
+def test_build_report_records_api_block_with_its_own_source():
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        network=_decrypt_meta(), api=_api_breakdown(),
+    )
+
+    assert built["api"]["source"] == "mitmproxy_decrypt"
+    assert built["network"]["tier"] == "decrypt"
+    assert built["api"]["totalRoutes"] == 7
+
+
+def test_write_html_renders_api_waterfall_sorted_by_p90(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        network=_decrypt_meta(), api=_api_breakdown(),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "接口瀑布图" in html
+    assert "API waterfall" in html
+    assert "POST /v1/login" in html
+    assert html.index("POST /v1/login") < html.index("GET /static/app.js")  # 慢的在上
+    assert "980.0" in html  # P90
+    assert "排序依据 P90" in html  # 口径必须写明，避免当成中位
+    # 域名分组正确
+    assert "api.trainapp.com：5 次" in html
+    assert "cdn.trainapp.com：2 次" in html
+    assert "共 7 个接口路由" in html
+    # 与连接级口径的差异必须明示，不可互相换算
+    assert "不可互相换算" in html
+
+
+def test_write_html_network_section_shows_decrypt_trust_verdict(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        network=_decrypt_meta(), api=_api_breakdown(),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "解密 / decrypt" in html
+    assert "信任探测" in html
+    assert "成功 / trusted" in html
+
+
+def test_write_html_network_section_shows_api_unavailable_reason(tmp_path):
+    """证书不信任时：原因与下一步都进网络小节，且不渲染瀑布图（没数据不画空表）。"""
+    built = report.build_report(
+        meta=_meta(),
+        record=_record(),
+        artifacts=[],
+        network=_network_meta(
+            tier="decrypt",
+            trust="rejected",
+            trustError="tlsv1 alert unknown ca",
+            apiEffective=False,
+            apiNotTestedReason=(
+                "被测 App 不信任代理 CA（tlsv1 alert unknown ca），本 run 不重试解密"
+            ),
+        ),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "证书不信任 / rejected" in html
+    assert "tlsv1 alert unknown ca" in html
+    assert "接口级不可用" in html
+    assert "本 run 不重试解密" in html
+    assert "接口瀑布图" not in html  # 没有接口数据就不出这一栏
+
+
+def test_write_html_passthrough_network_section_says_no_url():
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], network=_network_meta()
+    )
+
+    markup = report._network_markup(built)
+
+    assert "直通档 / passthrough" in markup
+    assert "无 URL / 状态码" in markup
+    assert "信任探测" not in markup  # 直通档不解密，没有信任结论可说

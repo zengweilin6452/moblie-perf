@@ -15,8 +15,24 @@
 3. **异常退出会把设备留在坏网络** → ``stop()`` 在异常路径上仍恢复；``doctor()`` 供
    启动时检查并清理残留代理/端口转发。
 
-本模块只做**直通整形档**（不解密 TLS）：可得连接级耗时与字节数；接口级明细归
-工单 18 的解密档。整形口径见 ``netproxy_addon`` 模块文档。
+两个档位（工单 17 / 18）：
+
+- **直通档（passthrough）**：不解密 TLS，只得连接级耗时与字节数；
+- **解密档（decrypt）**：解 TLS 拿 URL/状态码/响应大小，产出接口级指标。
+
+解密档**先探测再决定**：会话前观察首个客户端 TLS 握手结果。失败且属证书类错误
+即判定 App 不信任代理 CA，本 run 的 ``api_*`` 全部 ``not_tested``、不重试；同时
+后续连接降为直通，连接级指标仍然可用。整形口径见 ``netproxy_addon`` 模块文档。
+
+接口级指标的聚合口径（与连接级不同，两套数据独立入库、报告分栏）：
+
+- 统计单位是**一次请求**，不是一次连接。同一 URL 多次请求各算一个样本；
+- 分组键是 ``host + method + 去查询串的路径``——查询串常带 id/时间戳，留着会把
+  同一接口打散成无数条；
+- ``api_req_duration_ms`` / ``api_payload_kb`` 是**逐请求**的分布（中位/P90 描述
+  "一次调用有多慢"），``api_req_count`` 与 ``api_error_rate_pct`` 是**会话级单样本**
+  （前者是总请求数，后者是 ``(状态码≥400 + 连接失败) / 总请求数``）；
+- 连接级 ``net_conn_duration_ms`` 按 TLS 隧道统计，与接口级**不可互相换算**。
 """
 
 from __future__ import annotations
@@ -48,11 +64,29 @@ PROFILE_NAMES = (*PROFILE_PRESETS, CUSTOM_PROFILE)
 _PARAM_KEYS = ("latency_ms", "down_kbps", "up_kbps", "loss_pct")
 
 METRIC_CONN_DURATION = "net_conn_duration_ms"
+# 接口级指标（解密档，工单 18）：逐请求口径，聚合定义见 api_aggregates
+METRIC_API_DURATION = "api_req_duration_ms"
+METRIC_API_COUNT = "api_req_count"
+METRIC_API_ERROR_RATE = "api_error_rate_pct"
+METRIC_API_PAYLOAD = "api_payload_kb"
+API_METRIC_KEYS = (
+    METRIC_API_DURATION,
+    METRIC_API_COUNT,
+    METRIC_API_ERROR_RATE,
+    METRIC_API_PAYLOAD,
+)
+
+# 两个档位：直通不解密 / 解密做 TLS 中间人
+TIER_PASSTHROUGH = "passthrough"
+TIER_DECRYPT = "decrypt"
+TIER_NAMES = (TIER_PASSTHROUGH, TIER_DECRYPT)
 
 DEFAULT_PORT = 8080
 DEFAULT_START_TIMEOUT_S = 20.0
 DEFAULT_STOP_TIMEOUT_S = 10.0
 ADB_TIMEOUT_S = 15.0
+# 解密档要等首个客户端 TLS 握手出结论；给 App 留出冷启动发首个请求的时间
+DEFAULT_PROBE_TIMEOUT_S = 30.0
 
 # 代理侧日志文件名与 addon 脚本（随包分发，由独立解释器加载）
 ADDON_FILENAME = "netproxy_addon.py"
@@ -62,6 +96,19 @@ LOG_FILENAME = "net_proxy.jsonl"
 EVIDENCE_OBSERVED = "observed"
 EVIDENCE_NONE = "none"
 EVIDENCE_UNAVAILABLE = "unavailable"
+
+# 信任探测三态（解密档）
+TRUST_OK = "trusted"          # 握手成功：App 信任代理 CA，解密可用
+TRUST_REJECTED = "rejected"   # 证书类失败：App 不信任代理 CA
+TRUST_UNKNOWN = "unknown"     # 未观察到结论（无流量 / 非证书类失败）
+TRUST_PENDING = "pending"     # 会话仍在进行，尚无结论
+
+TRUST_HINT = (
+    "接口级指标需要 App 信任代理 CA。三条可行路径：①换 debug/profileable 包并让"
+    " networkSecurityConfig 信任用户 CA；②root 设备或可写 system 分区安装系统 CA；"
+    "③用可 -writable-system 的模拟器。Android 7+ 起 targetSdk ≥24 的 App 默认只信任"
+    "系统 CA，本 run 的接口级指标因此如实 not_tested，不影响连接级指标"
+)
 
 
 class NetProfileError(RuntimeError):
@@ -243,6 +290,17 @@ def port_in_use(port: int, host: str = "127.0.0.1", timeout_s: float = 0.5) -> b
 
 
 @dataclass
+class ApiRecord:
+    """一条接口级记录（解密档）：URL 去掉查询串后的路由 + 耗时/状态/大小。"""
+
+    host: str
+    route: str
+    status: int
+    duration_ms: float
+    size_bytes: int
+
+
+@dataclass
 class ProxyLogSummary:
     """从代理侧 JSON Lines 日志解析出的证据（纯函数产物，可直接落库）。"""
 
@@ -255,6 +313,13 @@ class ProxyLogSummary:
     bytes_down: int = 0
     bytes_up: int = 0
     params: dict[str, Any] | None = None
+    # 信任探测（解密档）：首个握手结论
+    trust: str = TRUST_UNKNOWN
+    trust_error: str | None = None
+    trust_host: str | None = None
+    # 接口级明细（解密档）
+    api_records: list[ApiRecord] = field(default_factory=list)
+    api_errors: int = 0
 
     @property
     def evidence(self) -> str:
@@ -275,6 +340,11 @@ class ProxyLogSummary:
             "bytesDown": self.bytes_down,
             "bytesUp": self.bytes_up,
             "params": self.params,
+            "apiRequests": len(self.api_records),
+            "apiErrors": self.api_errors,
+            "trust": self.trust,
+            "trustError": self.trust_error,
+            "trustHost": self.trust_host,
         }
 
 
@@ -334,10 +404,109 @@ def analyze_proxy_log(lines: list[str]) -> ProxyLogSummary:
             host = record.get("host")
             if host and host not in hosts:
                 hosts.append(host)
+        elif event == "trust_probe":
+            # 首个结论即定论：后续握手不再改写（addon 侧也只记一次）
+            if summary.trust == TRUST_UNKNOWN:
+                summary.trust = TRUST_OK if record.get("ok") else TRUST_REJECTED
+                summary.trust_error = record.get("error")
+                summary.trust_host = record.get("host")
+        elif event == "api_request":
+            host = str(record.get("host") or "")
+            summary.api_records.append(
+                ApiRecord(
+                    host=host,
+                    route=str(record.get("route") or ""),
+                    status=int(record.get("status") or 0),
+                    duration_ms=float(record.get("durationMs") or 0.0),
+                    size_bytes=int(record.get("sizeBytes") or 0),
+                )
+            )
+            if host and host not in hosts:
+                hosts.append(host)
+        elif event == "api_error":
+            summary.api_errors += 1
         elif event in ("tcp_error", "server_connect_error", "error"):
             summary.errors += 1
     summary.hosts = hosts
     return summary
+
+
+def api_aggregates(summary: ProxyLogSummary) -> list[dict[str, Any]]:
+    """把接口级明细聚合成 4 个 ``api_*`` 指标的入库行；没有记录返回空列表。
+
+    聚合口径（写进报告，避免与"单接口 P90"混淆）：
+
+    - ``api_req_duration_ms``：**逐请求**耗时的分布（同 URL 多次请求各算一个样本）。
+      这是"一次接口调用有多慢"的口径，不是"每个 URL 的平均值再取中位"。
+    - ``api_req_count``：本 run 的接口请求总数（单样本）。
+    - ``api_error_rate_pct``：``(状态码 ≥400 的请求数 + 连接失败数) / 总请求数``。
+      连接失败没有状态码，用 ``api_error`` 事件单独计数后并入分子。
+    - ``api_payload_kb``：逐请求响应体大小的分布（KB，1024 字节）。
+
+    任一指标没有样本就不产出行——不拿 0 冒充"没有错误"或"没有流量"。
+    """
+    rows: list[dict[str, Any]] = []
+    if summary.api_records:
+        durations = [record.duration_ms for record in summary.api_records]
+        payloads = [record.size_bytes / 1024.0 for record in summary.api_records]
+        total = len(summary.api_records) + summary.api_errors
+        failed = sum(1 for record in summary.api_records if record.status >= 400)
+        error_rate = (failed + summary.api_errors) * 100.0 / total if total else 0.0
+        rows.append(metrics_module.aggregate_row(METRIC_API_DURATION, durations))
+        rows.append(metrics_module.aggregate_row(METRIC_API_COUNT, [float(total)]))
+        rows.append(metrics_module.aggregate_row(METRIC_API_ERROR_RATE, [error_rate]))
+        rows.append(metrics_module.aggregate_row(METRIC_API_PAYLOAD, payloads))
+    return rows
+
+
+def api_breakdown(summary: ProxyLogSummary, *, top_n: int = 10) -> dict[str, Any]:
+    """报告瀑布图的数据源：按域名分组的慢接口 Top N（纯数据，渲染在 report）。
+
+    分组键是 ``host + 路由``（去查询串），每组给出请求数、中位/P90 耗时、错误数，
+    按 P90 降序取前 N。P90 而非中位排序：慢接口的痛点在尾部，中位会把它抹平。
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for record in summary.api_records:
+        key = f"{record.host}{record.route.split(' ', 1)[-1]}"
+        entry = groups.setdefault(
+            key,
+            {
+                "host": record.host,
+                "route": record.route,
+                "durations": [],
+                "errors": 0,
+                "payloadBytes": 0,
+            },
+        )
+        entry["durations"].append(record.duration_ms)
+        entry["payloadBytes"] += record.size_bytes
+        if record.status >= 400:
+            entry["errors"] += 1
+    items = []
+    for entry in groups.values():
+        ordered = sorted(entry["durations"])
+        items.append(
+            {
+                "host": entry["host"],
+                "route": entry["route"],
+                "count": len(ordered),
+                "medianMs": round(metrics_module.percentile(ordered, 0.5), 3),
+                "p90Ms": round(metrics_module.percentile(ordered, 0.9), 3),
+                "maxMs": round(ordered[-1], 3),
+                "errors": entry["errors"],
+                "payloadKb": round(entry["payloadBytes"] / 1024.0, 3),
+            }
+        )
+    items.sort(key=lambda item: item["p90Ms"], reverse=True)
+    by_host: dict[str, int] = {}
+    for item in items:
+        by_host[item["host"]] = by_host.get(item["host"], 0) + item["count"]
+    return {
+        "top": items[:top_n],
+        "totalRoutes": len(items),
+        "byHost": by_host,
+        "errors": summary.api_errors + sum(item["errors"] for item in items),
+    }
 
 
 def read_proxy_log(path: str | os.PathLike[str] | None) -> ProxyLogSummary:
@@ -367,11 +536,15 @@ class NetSession:
 
     ``applied`` 只表示**环境设置成功**（代理在跑、reverse 与系统代理已写）。
     是否**真的生效**看 ``evidence``：只有代理侧日志观察到连接才算 observed。
+    解密档另看 ``trust``：只有探测到"App 信任代理 CA"才有接口级指标。
     """
 
     profile: dict[str, Any] | None = None
+    tier: str = TIER_PASSTHROUGH
     applied: bool = False
     evidence: str = EVIDENCE_UNAVAILABLE
+    trust: str = TRUST_UNKNOWN
+    trust_error: str | None = None
     proxy_started: bool = False
     reverse_set: bool = False
     proxy_set: bool = False
@@ -390,6 +563,31 @@ class NetSession:
         return self.applied and self.evidence == EVIDENCE_OBSERVED
 
     @property
+    def api_effective(self) -> bool:
+        """接口级指标是否可用：必须是解密档，且信任探测明确成功。
+
+        ``TRUST_UNKNOWN``（没抓到流量 / 非证书类失败）不算可用——没有证据就不能
+        声称能解密，否则会把"没测到"说成"测了没问题"。
+        """
+        return self.effective and self.tier == TIER_DECRYPT and self.trust == TRUST_OK
+
+    @property
+    def api_not_tested_reason(self) -> str | None:
+        """接口级指标不可用时的如实原因（含可执行下一步）；可用返回 None。"""
+        if self.api_effective:
+            return None
+        if self.tier != TIER_DECRYPT:
+            return "直通档不解密 TLS，接口级指标不可得（用 --net-tier decrypt 开启解密档）"
+        if not self.applied:
+            return self.setup_errors[0] if self.setup_errors else "网络剖面未施加"
+        if not self.effective:
+            return self.not_tested_reason
+        if self.trust == TRUST_REJECTED:
+            detail = f"（{self.trust_error}）" if self.trust_error else ""
+            return f"被测 App 不信任代理 CA{detail}，本 run 不重试解密"
+        return "信任探测未取得结论：未观察到客户端 TLS 握手（App 可能走缓存或未发起请求）"
+
+    @property
     def not_tested_reason(self) -> str | None:
         """未生效时的如实原因（含可执行下一步）；生效返回 None。"""
         if not self.applied:
@@ -406,10 +604,15 @@ class NetSession:
     def as_dict(self) -> dict[str, Any]:
         return {
             "profile": self.profile,
+            "tier": self.tier,
             "applied": self.applied,
             "effective": self.effective,
             "evidence": self.evidence,
             "notTestedReason": self.not_tested_reason,
+            "trust": self.trust,
+            "trustError": self.trust_error,
+            "apiEffective": self.api_effective,
+            "apiNotTestedReason": self.api_not_tested_reason,
             "hint": self.hint,
             "note": self.note,
             "durationS": (
@@ -441,6 +644,7 @@ class NetProfiler:
         serial: str,
         mitmdump: str | None = None,
         port: int = DEFAULT_PORT,
+        tier: str = TIER_PASSTHROUGH,
         call_device: DeviceCaller | None = None,
         popen: Callable[..., Any] = subprocess.Popen,
         sleep: Callable[[float], None] = time.sleep,
@@ -450,9 +654,12 @@ class NetProfiler:
         in_use: Callable[[int], bool] = port_in_use,
         env: dict[str, str] | None = None,
     ):
+        if tier not in TIER_NAMES:
+            raise ValueError(f"未知弱网档位模式 {tier!r}，可选: {', '.join(TIER_NAMES)}")
         self.adb_path = adb_path
         self.serial = serial
         self.port = port
+        self.tier = tier
         self._explicit_mitmdump = mitmdump
         self._call = call_device or _default_call_device(adb_path)
         self._popen = popen
@@ -465,7 +672,7 @@ class NetProfiler:
         self._process: Any | None = None
         self._availability: ProxyAvailability | None = None
         self._profile: NetProfile | None = None
-        self._session = NetSession()
+        self._session = NetSession(tier=tier)
         self._log_path: str | None = None
 
     # ---- 可用性 ----
@@ -498,12 +705,17 @@ class NetProfiler:
             raise NetProfileError("网络剖面已在运行，不能重复 start")
         self._profile = profile
         self._session = NetSession(
-            profile=profile.as_dict(), started_at=self._now(), evidence=EVIDENCE_UNAVAILABLE
+            profile=profile.as_dict(),
+            tier=self.tier,
+            started_at=self._now(),
+            evidence=EVIDENCE_UNAVAILABLE,
+            trust=TRUST_PENDING if self.tier == TIER_DECRYPT else TRUST_UNKNOWN,
         )
 
         availability = self.availability()
         if not availability.available:
-            if profile.is_passthrough:
+            # 解密档即使 none 档位也必须起代理——否则根本没有接口级数据来源
+            if profile.is_passthrough and self.tier != TIER_DECRYPT:
                 # 不整形就不需要代理证明：采集照常，只是没有连接级耗时
                 self._session.applied = True
                 self._session.evidence = EVIDENCE_OBSERVED
@@ -561,6 +773,10 @@ class NetProfiler:
             self._session.log_summary = read_proxy_log(self._log_path)
             if self._session.applied:
                 self._session.evidence = self._session.log_summary.evidence
+                # 信任探测结论只在解密档有意义；直通档不解密，无所谓信任
+                if self._session.tier == TIER_DECRYPT:
+                    self._session.trust = self._session.log_summary.trust
+                    self._session.trust_error = self._session.log_summary.trust_error
         self._session.stopped_at = self._now()
         self._session.proxy_set = False
         self._session.reverse_set = False
@@ -585,6 +801,7 @@ class NetProfiler:
         environment["MOBILE_PERF_NETPARAMS"] = json.dumps(
             {key: getattr(self._profile, key) for key in _PARAM_KEYS}
         )
+        environment["MOBILE_PERF_NETTIER"] = self.tier
         environment["MOBILE_PERF_NETLOG"] = str(self._log_path)
         args = [
             executable,
@@ -648,6 +865,20 @@ class NetProfiler:
         value = f"127.0.0.1:{self.port}" if enabled else ":0"
         args = ["-s", self.serial, "shell", "settings", "put", "global", "http_proxy", value]
         return _ok(self._call(args, ADB_TIMEOUT_S))
+
+    # ---- 结论导出 ----
+
+    def api_aggregates(self) -> list[dict[str, Any]]:
+        """接口级指标入库行；接口级不可用时返回空列表（由调用方标 not_tested）。"""
+        if not self._session.api_effective:
+            return []
+        return api_aggregates(self._session.log_summary)
+
+    def api_breakdown(self, *, top_n: int = 10) -> dict[str, Any] | None:
+        """报告瀑布图数据；接口级不可用时返回 None（报告据此不渲染该节）。"""
+        if not self._session.api_effective:
+            return None
+        return api_breakdown(self._session.log_summary, top_n=top_n)
 
 
 def _ok(result: Any) -> bool:

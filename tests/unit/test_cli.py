@@ -28,7 +28,7 @@ class StubKit:
     def run_collect(self, *, target, items, duration_s, host_run_id=None, runs_dir=None,
                     start_mode=None, jank_thresholds_ms=None, frame_poll=False,
                     frame_interval_s=None, net_profile=None, net_overrides=None,
-                    net_mitmdump=None, net_port=None):
+                    net_tier=None, net_mitmdump=None, net_port=None):
         self.calls.append(
             {
                 "target": target,
@@ -42,6 +42,7 @@ class StubKit:
                 "frame_interval_s": frame_interval_s,
                 "net_profile": net_profile,
                 "net_overrides": net_overrides,
+                "net_tier": net_tier,
                 "net_mitmdump": net_mitmdump,
                 "net_port": net_port,
             }
@@ -916,6 +917,32 @@ def test_collect_rejects_unknown_net_profile_choice(tmp_path):
         cli.main(
             ["collect", "tv.danmaku.bili", "--serial", "749622c9",
              "--adb", fake_adb(tmp_path), "--net-profile", "2g"],
+            kit_factory=lambda **kwargs: StubKit(**kwargs),
+        )
+
+
+def test_collect_net_tier_defaults_to_passthrough(tmp_path):
+    exit_code, kits = _collect_with_net(tmp_path, "--net-profile", "weak")
+
+    assert exit_code == 0
+    assert kits[0].calls[0]["net_tier"] == "passthrough"
+
+
+def test_collect_passes_decrypt_net_tier(tmp_path):
+    """ticket 18：--net-tier decrypt 透传到 kit（接口级指标的前提）。"""
+    exit_code, kits = _collect_with_net(
+        tmp_path, "--net-profile", "weak", "--net-tier", "decrypt"
+    )
+
+    assert exit_code == 0
+    assert kits[0].calls[0]["net_tier"] == "decrypt"
+
+
+def test_collect_rejects_unknown_net_tier_choice(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(
+            ["collect", "tv.danmaku.bili", "--serial", "749622c9",
+             "--adb", fake_adb(tmp_path), "--net-tier", "mitm"],
             kit_factory=lambda **kwargs: StubKit(**kwargs),
         )
 
