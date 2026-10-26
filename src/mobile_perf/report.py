@@ -149,6 +149,7 @@ def build_report(
     events: list[dict[str, Any]] | None = None,
     jank_thresholds_ms: dict[str, float] | None = None,
     frames: dict[str, Any] | None = None,
+    pages: dict[str, Any] | None = None,
     network: dict[str, Any] | None = None,
     gpu: dict[str, Any] | None = None,
     api: dict[str, Any] | None = None,
@@ -195,6 +196,10 @@ def build_report(
             "source": "gfxinfo_framestats",
             "granularity": "per_frame",
         }
+    # 整页加载耗时（ticket 19）：与启动耗时**分开**呈现——一个从进程拉起算起，
+    # 一个从页面打标算起，混在一张表里会被读成同一件事
+    if pages is not None:
+        report["pages"] = {**pages, "source": "pageflow_last_frame_stable"}
     # 网络剖面（ticket 17）：档位是可比性维度，与逐帧/GPU 并列展示。
     # 只放已脱敏的结论（档位参数、证据、恢复结果），不含任何流量内容
     if network is not None:
@@ -367,6 +372,7 @@ th {{ background: #f2f4f8; }}
 <h2>会话元信息</h2>
 <table class="meta">{meta_rows}</table>
 {startup_markup}
+{page_markup}
 {jank_markup}
 {frame_markup}
 {gpu_markup}
@@ -410,6 +416,7 @@ th {{ background: #f2f4f8; }}
       grid: {{ left: 60, right: 24, top: 40, bottom: 40 }}
     }};
 __STARTUP_MARKLINE__
+__PAGE_MARKLINE__
 __JANK_THRESHOLD_LINE__
     chart.setOption(option);
   }});
@@ -461,6 +468,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         run_id=html_escape(report["runId"]),
         meta_rows=meta_rows,
         startup_markup=_startup_markup(report),
+        page_markup=_page_markup(report),
         jank_markup=_jank_markup(report),
         frame_markup=_frame_markup(report),
         gpu_markup=_gpu_markup(report),
@@ -474,6 +482,7 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
     )
     # 启动点标记按需注入（占位符在 format 之后替换，避免花括号转义）
     html_text = html_text.replace("__STARTUP_MARKLINE__", _startup_markline_script(report))
+    html_text = html_text.replace("__PAGE_MARKLINE__", _page_markline_script(report))
     html_text = html_text.replace(
         "__JANK_THRESHOLD_LINE__", _jank_threshold_line_script(report)
     )
@@ -503,6 +512,7 @@ _COMBINED_SCRIPT = """<script>
     data: fps.points.map(function (p) { return [p[0], p[1]]; })
   }];
 __STARTUP_MARKLINE__
+__PAGE_MARKLINE__
   var axes = [{ type: "value", name: fps.unit }];
   var axisByUnit = {};
   axisByUnit[fps.unit] = 0;
@@ -540,6 +550,97 @@ def _combined_thermal_markup(series: dict[str, Any]) -> tuple[str, str]:
         return "", ""
     div = f'<h2>温度-帧率同图</h2><div class="chart" id="{_COMBINED_CHART_ID}"></div>'
     return div, _COMBINED_SCRIPT.replace("__CHART_ID__", _COMBINED_CHART_ID)
+
+
+def _page_markup(report: dict[str, Any]) -> str:
+    """整页加载耗时小节（ticket 19）：逐页一行，不可判定的页如实写原因。
+
+    与启动耗时分开呈现：启动耗时从进程拉起算起，整页耗时从**页面打标**算起，
+    两者的计时原点不同，混在一张表里会被读成同一件事。
+    """
+    pages = report.get("pages")
+    if not pages:
+        return ""
+    rows = []
+    for item in pages.get("pages") or []:
+        status = str(item.get("status") or "")
+        value = item.get("pageLoadMs")
+        rows.append(
+            "<tr><td>{page}</td><td>{value}</td><td>{status}</td><td>{frames}</td>"
+            "<td>{reason}</td></tr>".format(
+                page=html_escape(str(item.get("page") or "")),
+                value=_fmt(value) if value is not None else "not_tested",
+                status=html_escape(_PAGE_STATUS_TEXT.get(status, status)),
+                frames=item.get("frameCount", ""),
+                reason=html_escape(str(item.get("reason") or "")),
+            )
+        )
+    offset_source = str(pages.get("clockOffsetSource") or "")
+    offset_text = {
+        "uptime_bracket": "括号式 uptime 实测换算（读一次 /proc/uptime，往返取中点）",
+        "no_uptime_offset": "未取到设备 uptime，帧时刻无法换算，本 run 不硬算",
+        "no_frame_poll": "未开启逐帧采集，没有帧完成时刻",
+    }.get(offset_source, offset_source or "未知")
+    if pages.get("clockRttMs") is not None:
+        offset_text += f"（往返 {pages['clockRttMs']} ms，对齐误差为往返量级）"
+    parts = [
+        "<h2>整页加载耗时 / Page load</h2>",
+        '<table class="page-load"><tr><th>页面 / Page</th><th>整页耗时 / Load (ms)</th>'
+        "<th>判定 / Status</th><th>帧数 / Frames</th><th>说明 / Note</th></tr>"
+        f"{''.join(rows)}</table>",
+        "<p>口径：从页面打标到画面进入稳定的耗时（首个连续 "
+        f"≥{html_escape(str(pages.get('quietGapMs', '')))} ms 无新帧的窗口起点）；"
+        f"超过 {html_escape(str(pages.get('timeoutMs', '')))} ms 仍无静默则判不可判定。"
+        f"时钟换算 / Clock：{html_escape(offset_text)}。"
+        "「稳定」是<b>视觉稳定</b>，不保证懒加载数据已就绪；首帧前的空白期计入耗时。"
+        "本指标与启动耗时口径不同、不可互相换算。</p>",
+    ]
+    return "".join(parts)
+
+
+_PAGE_STATUS_TEXT = {
+    "ok": "稳定 / stable",
+    "timeout": "超时（持续动画）/ timeout",
+    "no_frames": "无帧 / no frames",
+    "incomplete": "观测不足 / incomplete",
+}
+
+
+def _page_markline_script(report: dict[str, Any]) -> str:
+    """整页耗时标注脚本块（ticket 19）：有可判定页面才在时间轴上画竖线。"""
+    pages = report.get("pages") or {}
+    points = [
+        {"s": item.get("stableAtS"), "ms": item.get("pageLoadMs"), "page": item.get("page")}
+        for item in pages.get("pages") or []
+        if item.get("stableAtS") is not None and item.get("pageLoadMs") is not None
+    ]
+    if not points:
+        return ""
+    return """(function () {
+    var points = __PAGE_POINTS__;
+    var mark = {
+      symbol: "none",
+      lineStyle: { color: "#2f7d32", type: "dashed" },
+      label: { formatter: function (p) { return p.name; }, fontSize: 10 },
+      data: points.map(function (p) {
+        return { xAxis: p.s, name: p.page + " " + p.ms + " ms" };
+      })
+    };
+    // 启动点竖线可能已经占用了 markLine：追加而不是覆盖，两者都该看到
+    var host = null;
+    if (typeof option !== "undefined" && option.series && option.series.length) {
+      host = option.series[0];
+    } else if (typeof lines !== "undefined" && lines.length > 0) {
+      host = lines[0];
+    }
+    if (!host) return;
+    if (host.markLine && host.markLine.data) {
+      host.markLine.data = host.markLine.data.concat(mark.data);
+    } else {
+      host.markLine = mark;
+    }
+  })();
+  """.replace("__PAGE_POINTS__", json.dumps(points, ensure_ascii=False))
 
 
 def _gpu_markup(report: dict[str, Any]) -> str:

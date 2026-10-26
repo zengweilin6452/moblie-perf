@@ -313,8 +313,8 @@ def test_trend_command_prints_trend_json(tmp_path, capsys):
             super().__init__(**kwargs)
             captured["db_path"] = kwargs.get("db_path")
 
-        def trend(self, pkg, metric, profile=None):
-            captured["args"] = (pkg, metric, profile)
+        def trend(self, pkg, metric, profile=None, net_profile=None):
+            captured["args"] = (pkg, metric, profile, net_profile)
             return trend_payload
 
     exit_code = cli.main(
@@ -334,14 +334,14 @@ def test_trend_command_prints_trend_json(tmp_path, capsys):
     )
 
     assert exit_code == 0
-    assert captured["args"] == ("tv.danmaku.bili", "mem_pss_mb", None)
+    assert captured["args"] == ("tv.danmaku.bili", "mem_pss_mb", None, None)
     assert captured["db_path"] == str(tmp_path / "d.db")
     assert json.loads(capsys.readouterr().out) == trend_payload
 
 
 def test_trend_command_passes_explicit_profile_and_error_returns_nonzero(tmp_path, capsys):
     class ProfileKit(StubKit):
-        def trend(self, pkg, metric, profile=None):
+        def trend(self, pkg, metric, profile=None, net_profile=None):
             raise cli.ProfileMismatchError("跨档案拒绝")
 
     exit_code = cli.main(
@@ -635,7 +635,7 @@ def test_trend_command_without_serial_reads_store_only(tmp_path, capsys):
             super().__init__(**kwargs)
             captured["serial"] = kwargs.get("serial")
 
-        def trend(self, pkg, metric, profile=None):
+        def trend(self, pkg, metric, profile=None, net_profile=None):
             return trend_payload
 
     exit_code = cli.main(
@@ -805,8 +805,8 @@ def test_leak_command_prints_json_and_passes_profile(tmp_path, capsys):
             super().__init__(**kwargs)
             captured["serial"] = kwargs.get("serial")
 
-        def leak_trend(self, pkg, profile=None, **kwargs):
-            captured["args"] = (pkg, profile, kwargs)
+        def leak_trend(self, pkg, profile=None, net_profile=None, **kwargs):
+            captured["args"] = (pkg, profile, net_profile, kwargs)
             return payload
 
     exit_code = cli.main(
@@ -827,16 +827,17 @@ def test_leak_command_prints_json_and_passes_profile(tmp_path, capsys):
 
     assert exit_code == 0
     assert captured["serial"] is None
-    pkg, profile, kwargs = captured["args"]
+    pkg, profile, net_profile, kwargs = captured["args"]
     assert pkg == "com.sinosoft.trainapp"
     assert profile == "Xiaomi-2206123SC-Android14"
+    assert net_profile is None
     assert kwargs == {"slope_threshold": 2.0, "level": "warn"}
     assert json.loads(capsys.readouterr().out) == payload
 
 
 def test_leak_command_profile_mismatch_and_trend_error_return_nonzero(tmp_path, capsys):
     class MismatchKit(StubKit):
-        def leak_trend(self, pkg, profile=None, **kwargs):
+        def leak_trend(self, pkg, profile=None, net_profile=None, **kwargs):
             raise cli.ProfileMismatchError("跨档案拒绝")
 
     exit_code = cli.main(
@@ -847,7 +848,7 @@ def test_leak_command_profile_mismatch_and_trend_error_return_nonzero(tmp_path, 
     assert "跨档案拒绝" in capsys.readouterr().err
 
     class ErrorKit(StubKit):
-        def leak_trend(self, pkg, profile=None, **kwargs):
+        def leak_trend(self, pkg, profile=None, net_profile=None, **kwargs):
             raise cli.TrendError("无数据")
 
     exit_code = cli.main(
@@ -1003,3 +1004,46 @@ def test_netprof_doctor_nonzero_when_cleanup_does_not_take_effect(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 1
     assert payload["proxyClean"] is False
+
+
+# ---- ticket 20：trend / leak 的 --net-profile 档位过滤 ----
+
+def test_trend_command_passes_net_profile(tmp_path, capsys):
+    trend_payload = {"pkg": "tv.danmaku.bili", "metric": "mem_pss_mb", "runs": []}
+    captured = {}
+
+    class NetTrendKit(StubKit):
+        def trend(self, pkg, metric, profile=None, net_profile=None):
+            captured["args"] = (pkg, metric, profile, net_profile)
+            return trend_payload
+
+    exit_code = cli.main(
+        [
+            "trend", "tv.danmaku.bili", "--metric", "mem_pss_mb",
+            "--net-profile", "weak", "--adb", fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: NetTrendKit(**kwargs),
+    )
+
+    assert exit_code == 0
+    assert captured["args"] == ("tv.danmaku.bili", "mem_pss_mb", None, "weak")
+
+
+def test_leak_command_passes_net_profile(tmp_path, capsys):
+    captured = {}
+
+    class NetLeakKit(StubKit):
+        def leak_trend(self, pkg, profile=None, net_profile=None, **kwargs):
+            captured["args"] = (pkg, profile, net_profile)
+            return {"pkg": pkg, "runs": []}
+
+    exit_code = cli.main(
+        [
+            "leak", "tv.danmaku.bili", "--net-profile", "weak",
+            "--adb", fake_adb(tmp_path),
+        ],
+        kit_factory=lambda **kwargs: NetLeakKit(**kwargs),
+    )
+
+    assert exit_code == 0
+    assert captured["args"] == ("tv.danmaku.bili", None, "weak")

@@ -1124,3 +1124,184 @@ def test_kit_allows_serial_none_for_read_only_use(tmp_path):
         kit.collect(target="tv.danmaku.bili", items=["CPU"])
     with pytest.raises(ValueError, match="serial"):
         kit.run_collect(target="tv.danmaku.bili", items=["CPU"], duration_s=1.0)
+
+
+# ---- ticket 20：网络档位作为与设备档案并列的可比性维度 ----
+
+
+def _tier_run(store, run_id, *, net_name, started_at, median=20.0):
+    store.record_session(
+        {
+            "run_id": run_id,
+            "target": "tv.danmaku.bili",
+            "device_profile": "PICO4-Android12",
+            "net_profile": None if net_name is None else {"name": net_name},
+            "started_at": started_at,
+            "duration_s": 30.0,
+        }
+    )
+    store.record_metrics(
+        run_id,
+        [{"metric_key": "mem_pss_mb", "unit": "MB", "median": median, "sample_count": 1}],
+    )
+
+
+def test_trend_rejects_cross_net_tier_without_explicit_net_profile(tmp_path):
+    """普通 run 与弱网 run 混在一个包里：趋势默认拒绝（口径不可比）。"""
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    _tier_run(store, "run-a", net_name=None, started_at="2026-10-25T10:00:00")
+    _tier_run(store, "run-b", net_name="weak", started_at="2026-10-25T11:00:00")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    with pytest.raises(kit_module.ProfileMismatchError, match="网络档位"):
+        kit.trend("tv.danmaku.bili", "mem_pss_mb")
+
+
+def test_trend_explicit_net_profile_overrides_and_marks_mismatch(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    _tier_run(store, "run-a", net_name=None, started_at="2026-10-25T10:00:00")
+    _tier_run(store, "run-b", net_name="weak", started_at="2026-10-25T11:00:00")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    trend = kit.trend("tv.danmaku.bili", "mem_pss_mb", net_profile="weak")
+
+    assert [r["runId"] for r in trend["runs"]] == ["run-b"]
+    assert trend["netProfile"] == "weak"
+    assert trend["netProfileMismatch"] is True  # 另一档位的 run 被排除
+    assert trend["runs"][0]["netProfile"] == "weak"
+
+
+def test_trend_same_net_tier_runs_do_not_mismatch(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    _tier_run(store, "run-a", net_name="weak", started_at="2026-10-25T10:00:00")
+    _tier_run(store, "run-b", net_name="weak", started_at="2026-10-25T11:00:00")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    trend = kit.trend("tv.danmaku.bili", "mem_pss_mb")
+
+    assert trend["netProfile"] == "weak"
+    assert trend["netProfileMismatch"] is False
+
+
+def test_trend_unknown_net_profile_raises_with_existing_tiers(tmp_path):
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    _tier_run(store, "run-a", net_name="weak", started_at="2026-10-25T10:00:00")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    with pytest.raises(TrendError, match="weak"):
+        kit.trend("tv.danmaku.bili", "mem_pss_mb", net_profile="4g")
+
+
+def test_leak_trend_rejects_cross_net_tier_without_override(tmp_path):
+    """泄漏趋势与 trend 同口径：跨网络档位默认拒绝。"""
+    store = PerfStore(tmp_path / "data" / "mobile_perf.db")
+    _tier_run(store, "run-a", net_name=None, started_at="2026-10-25T10:00:00")
+    _tier_run(store, "run-b", net_name="weak", started_at="2026-10-26T10:00:00")
+    kit = make_kit(tmp_path, FakeHarnessBackend(), store=store)
+
+    with pytest.raises(kit_module.ProfileMismatchError, match="网络档位"):
+        kit.leak_trend("tv.danmaku.bili")
+
+
+def test_judge_same_net_tier_judges_normally(tmp_path):
+    kit = make_judge_kit(tmp_path)
+    kit.store.record_session(
+        {
+            "run_id": "run-baseline-src",
+            "target": "tv.danmaku.bili",
+            "net_profile": {"name": "weak", "latencyMs": 400.0},
+        }
+    )
+    kit.save_baseline(BASELINE_REPORT, name="bili-weak-v1")
+    run_report = dict(
+        BASELINE_REPORT,
+        runId="run-under-judgement",
+        network={"profile": {"name": "weak", "latencyMs": 400.0}},
+        metricsSummary={"mem_pss_mb": {"unit": "MB", "median": 150.0, "sampleCount": 30}},
+    )
+
+    verdict = kit.judge(
+        run_report,
+        JudgeSpec(baseline="bili-weak-v1", thresholds={"mem_pss_mb": ("lt", 220.0, "fail")}),
+    )
+
+    assert verdict.verdict == "passed"
+
+
+def test_judge_net_tier_mismatch_is_not_tested(tmp_path):
+    """弱网基线配无弱网 run：档位不可比 → not_tested（不硬判）。"""
+    kit = make_judge_kit(tmp_path)
+    kit.store.record_session(
+        {"run_id": "run-baseline-src", "target": "tv.danmaku.bili",
+         "net_profile": {"name": "weak"}}
+    )
+    kit.save_baseline(BASELINE_REPORT, name="bili-weak-v1")
+    run_report = dict(
+        BASELINE_REPORT,
+        runId="run-under-judgement",
+        network={"profile": {"name": "none", "latencyMs": 0.0}},
+    )
+
+    verdict = kit.judge(
+        run_report,
+        JudgeSpec(baseline="bili-weak-v1", thresholds={"mem_pss_mb": ("lt", 220.0, "fail")}),
+    )
+
+    assert verdict.verdict == "not_tested"
+    assert "网络档位不匹配" in verdict.reason
+    assert "weak" in verdict.reason and "none" in verdict.reason
+
+
+def test_judge_baseline_without_tier_skips_tier_compare(tmp_path):
+    """基线来源 run 没记档位（老 run）：档位维度不参与，按设备档案照常判。"""
+    kit = make_judge_kit(tmp_path)
+    kit.save_baseline(BASELINE_REPORT, name="bili-home-v3")
+    run_report = dict(
+        BASELINE_REPORT,
+        runId="run-under-judgement",
+        network={"profile": {"name": "weak", "latencyMs": 400.0}},
+        metricsSummary={"mem_pss_mb": {"unit": "MB", "median": 150.0, "sampleCount": 30}},
+    )
+
+    verdict = kit.judge(
+        run_report,
+        JudgeSpec(baseline="bili-home-v3", thresholds={"mem_pss_mb": ("lt", 220.0, "fail")}),
+    )
+
+    assert verdict.verdict == "passed"
+
+
+def test_judge_baseline_spanning_tiers_is_not_tested(tmp_path):
+    """基线的来源 run 自己跨档：基线口径含糊 → not_tested，不猜该信哪条。"""
+    kit = make_judge_kit(tmp_path)
+    kit.store.record_session(
+        {"run_id": "run-src-weak", "target": "tv.danmaku.bili",
+         "net_profile": {"name": "weak"}}
+    )
+    kit.store.record_session(
+        {"run_id": "run-src-none", "target": "tv.danmaku.bili"}
+    )
+    kit.store.record_baseline(
+        name="bili-mixed", target_pkg="tv.danmaku.bili", metric_key="mem_pss_mb",
+        value=180.0, source_run_id="run-src-weak",
+    )
+    kit.store.record_baseline(
+        name="bili-mixed", target_pkg="tv.danmaku.bili", metric_key="cpu_app_pct",
+        value=12.0, source_run_id="run-src-none",
+    )
+    run_report = dict(
+        BASELINE_REPORT,
+        runId="run-under-judgement",
+        network={"profile": {"name": "weak"}},
+    )
+
+    verdict = kit.judge(
+        run_report,
+        JudgeSpec(
+            baseline="bili-mixed",
+            thresholds={"mem_pss_mb": ("lt", 220.0, "fail")},
+        ),
+    )
+
+    assert verdict.verdict == "not_tested"
+    assert "跨多个网络档位" in verdict.reason

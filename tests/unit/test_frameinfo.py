@@ -174,9 +174,9 @@ def test_write_frames_csv_roundtrip(tmp_path):
     path = frameinfo.write_frames_csv(tmp_path / "frames.csv", samples)
 
     rows = list(csv.reader(path.read_text(encoding="utf-8").splitlines()))
-    assert rows[0] == ["vsync_id", "duration_ms", "interval_ms"]
-    assert rows[1] == ["1", "8.123", "16.667"]
-    assert rows[2] == ["2", "40.0", ""]
+    assert rows[0] == ["vsync_id", "duration_ms", "interval_ms", "completed_s"]
+    assert rows[1] == ["1", "8.123", "16.667", ""]
+    assert rows[2] == ["2", "40.0", "", ""]
 
 
 def test_write_frames_csv_skips_empty(tmp_path):

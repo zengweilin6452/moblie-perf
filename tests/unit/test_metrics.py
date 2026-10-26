@@ -51,6 +51,8 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "api_req_count",
         "api_error_rate_pct",
         "api_payload_kb",
+        # 整页加载耗时（ticket 19，source=pc_orchestration，末帧稳定口径）
+        "page_load_ms",
         # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）
         "mem_pss_slope_mb_per_day",
     }

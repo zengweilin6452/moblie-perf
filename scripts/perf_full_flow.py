@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from mobile_perf import JudgeSpec, PerfKit, SessionSpec
+from mobile_perf import netprof as netprof_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ADB = REPO_ROOT / "SoloPi" / "platform-tools" / "adb.exe"
@@ -38,6 +39,20 @@ def parse_args() -> argparse.Namespace:
                    metavar="METRIC:OP:VALUE:LEVEL", help="门禁阈值，可重复")
     p.add_argument("--start-mode", choices=["cold", "warm"], default=None,
                    help="采集窗口内执行启动计时（cold/warm）")
+    p.add_argument("--net-profile", choices=netprof_module.PROFILE_NAMES, default=None,
+                   help="弱网档位（工单 20）：仅第二轮施加（none/4g/3g/weak/custom）；"
+                        "第一轮为无弱网对照。custom 可配 --net-latency/--net-down/"
+                        "--net-up/--net-loss")
+    p.add_argument("--net-tier", choices=netprof_module.TIER_NAMES,
+                   default=netprof_module.TIER_PASSTHROUGH,
+                   help="弱网档位模式（工单 18）：passthrough=连接级；decrypt=接口级")
+    p.add_argument("--net-mitmdump", default=None,
+                   help="mitmdump 路径（默认 env MOBILE_PERF_MITMDUMP > PATH）")
+    p.add_argument("--frame-poll", action="store_true",
+                   help="开启逐帧采集（工单 15，整页耗时也依赖它）")
+    p.add_argument("--pages", default=None,
+                   help="逗号分隔页面名（工单 19）：滑动序列中逐个 mark_page，"
+                        "计整页加载耗时；需 --frame-poll")
     return p.parse_args()
 
 
@@ -74,12 +89,16 @@ def main() -> int:
         print("设备未就绪，中止", file=sys.stderr)
         return 2
 
+    pages = [name for name in (args.pages or "").split(",") if name]
+
     def drive(phase: str, session) -> None:
         for i in range(args.swipes):
             sh("shell", "input", "swipe", "540", "1600", "540", "400", "600")
             time.sleep(args.swipe_gap)
             if i == args.swipes // 2 - 1:
                 session.mark(f"{phase}_half")
+            if i < len(pages):
+                session.mark_page(pages[i])
 
     def launch() -> None:
         sh("shell", "am", "force-stop", args.package)
@@ -93,9 +112,9 @@ def main() -> int:
     print("== 2. 启动目标 App")
     launch()
 
-    print("== 3. 第一轮采集（建立基线）")
+    print("== 3. 第一轮采集（建立基线，无弱网对照）")
     with kit.collect(spec, host_run_id=f"{baseline}-run1-{stamp}",
-                     start_mode=args.start_mode) as s:
+                     start_mode=args.start_mode, frame_poll=args.frame_poll) as s:
         s.mark("run1_start")
         drive("run1", s)
         s.mark("run1_end")
@@ -106,15 +125,53 @@ def main() -> int:
     kit.save_baseline(run1, baseline)
     print(f"  baseline={baseline}")
 
-    print("== 5. 第二轮采集（同口径复测）")
+    print("== 5. 第二轮采集（"
+          + (f"弱网档 {args.net_profile}" if args.net_profile else "同口径复测")
+          + "）")
     launch()
-    with kit.collect(spec, host_run_id=f"{baseline}-run2-{stamp}",
-                     start_mode=args.start_mode) as s:
+    collect_kwargs = dict(start_mode=args.start_mode, frame_poll=args.frame_poll)
+    if args.net_profile:
+        collect_kwargs.update(
+            net_profile=args.net_profile,
+            net_tier=args.net_tier,
+            net_mitmdump=args.net_mitmdump,
+        )
+    with kit.collect(spec, host_run_id=f"{baseline}-run2-{stamp}", **collect_kwargs) as s:
         s.mark("run2_start")
         drive("run2", s)
         s.mark("run2_end")
     run2 = s.finalize()
     print(f"  run2={run2['runId']} samples={run2.get('sampleCount')}")
+
+    if args.net_profile:
+        weak_baseline = f"{baseline}-net-{args.net_profile}"
+        kit.save_baseline(run2, weak_baseline)
+        print(f"  弱网档基线={weak_baseline}")
+        print("== 6. 弱网对比（跨档位不进门禁，逐指标并排对照）")
+        print(f"  {'指标':<32}{'对照档':>14}{'弱网档':>14}")
+        for key in sorted(
+            set(run1["metricsSummary"]) & set(run2["metricsSummary"])
+        ):
+            a = run1["metricsSummary"][key].get("median")
+            b = run2["metricsSummary"][key].get("median")
+            if a is None or b is None:
+                continue
+            print(f"  {key:<32}{a:>14.3f}{b:>14.3f}")
+        print("  同档位门禁：用对照基线判对照复测、弱网基线判弱网复测"
+              "（跨档位判定会被 not_tested 拒绝，这是设计行为）")
+        print("== 7. 趋势（分档位各自输出）")
+        metric = "fps_frame"
+        for tier in (None, args.net_profile):
+            label = tier or "对照"
+            print(f"  -- 档位 {label} --")
+            try:
+                print(json.dumps(
+                    kit.trend(args.package, metric, profile=profile, net_profile=tier),
+                    ensure_ascii=False, indent=2, default=str))
+            except Exception as exc:  # 单档位样本不足等，不阻断另一档位
+                print(f"  （档位 {label} 无趋势：{exc}）")
+        print(f"== 报告：runs/{run2['runId']}/report.html 与 report.json")
+        return 0
 
     print("== 6. 门禁判定")
     thresholds: dict[str, tuple] = {}

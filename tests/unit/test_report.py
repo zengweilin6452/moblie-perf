@@ -770,3 +770,120 @@ def test_write_html_passthrough_network_section_says_no_url():
     assert "直通档 / passthrough" in markup
     assert "无 URL / 状态码" in markup
     assert "信任探测" not in markup  # 直通档不解密，没有信任结论可说
+
+
+# ---------- 整页加载耗时（ticket 19）：逐页呈现与时间轴标注 ----------
+
+
+def _pages_meta(**overrides):
+    meta = {
+        "quietGapMs": 300.0,
+        "timeoutMs": 15000.0,
+        "clockOffsetS": -1000.025,
+        "clockOffsetSource": "uptime_bracket",
+        "clockRttMs": 50.0,
+        "status": "ok",
+        "pages": [
+            {"page": "home", "status": "ok", "t0S": 1.0, "pageLoadMs": 1200.0,
+             "stableAtS": 2.2, "frameCount": 3, "lastFrameS": 2.2, "reason": None},
+            {"page": "carousel", "status": "timeout", "t0S": 5.0, "pageLoadMs": None,
+             "stableAtS": None, "frameCount": 200, "lastFrameS": 20.0,
+             "reason": "观测 15000 ms 内画面始终有新帧（无限动画/持续刷新），"
+                       "未出现 ≥300 ms 的静默窗口"},
+        ],
+    }
+    meta.update(overrides)
+    return meta
+
+
+def test_build_report_records_pages_block_with_its_own_source():
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], pages=_pages_meta()
+    )
+
+    assert built["pages"]["source"] == "pageflow_last_frame_stable"
+    assert built["pages"]["quietGapMs"] == 300.0
+    assert [item["page"] for item in built["pages"]["pages"]] == ["home", "carousel"]
+
+
+def test_build_report_without_pages_omits_block():
+    built = report.build_report(meta=_meta(), record=_record(), artifacts=[])
+
+    assert "pages" not in built
+
+
+def test_write_html_renders_page_section_with_per_page_status(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], pages=_pages_meta()
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "整页加载耗时 / Page load" in html
+    assert "1200" in html
+    # 不可判定的页必须如实写 not_tested 与原因，不能留空
+    assert "not_tested" in html
+    assert "无限动画" in html
+    assert "超时（持续动画）" in html
+    # 与启动耗时口径不同这件事必须写在页面上
+    assert "不可互相换算" in html
+
+
+def test_write_html_page_section_explains_clock_offset_source(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[], pages=_pages_meta()
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "括号式 uptime 实测换算" in html
+    assert "往返 50.0 ms" in html  # 对齐误差量级必须写出来
+
+
+def test_write_html_page_section_says_why_no_clock_offset(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta(clockOffsetS=None, clockOffsetSource="no_uptime_offset",
+                          clockRttMs=None, status="degraded", pages=[]),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "未取到设备 uptime" in html
+    assert "本 run 不硬算" in html
+
+
+def test_page_markline_appends_to_startup_markline(tmp_path):
+    """启动点与页面稳定点共用一条 markLine：必须追加，不能互相覆盖。"""
+    built = report.build_report(
+        meta={**_meta(), "startup": STARTUP_META},
+        record=_record(),
+        artifacts=[],
+        series={
+            "mem_pss_mb": {"unit": "MB", "labelZh": "应用PSS内存", "points": [[0.0, 42.0]]}
+        },
+        pages=_pages_meta(),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    script = _strip_vendor(html)
+    assert "启动点" in script
+    # 页面稳定点以数据形式注入（名字在浏览器侧拼出来），故只看注入的 points 段
+    points = script[script.index("var points = "):]
+    points = points[: points.index(";")]
+    assert '"page": "home"' in points and '"ms": 1200.0' in points
+    assert "carousel" not in points  # 超时页没有稳定点，不画线
+    # 追加语义：先判已有 markLine 再 concat，而不是直接赋值覆盖
+    assert "markLine.data.concat" in script
+
+
+def test_page_markline_absent_when_no_page_is_stable(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta(pages=[_pages_meta()["pages"][1]]),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "markLine" not in _strip_vendor(html)

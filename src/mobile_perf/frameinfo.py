@@ -21,6 +21,12 @@
 轮询策略：会话开始时 ``gfxinfo <pkg> reset`` 清零窗口，之后每轮读一次并增量
 累积（按 vsync id 去重），会话结束取全量。``dumpsys`` 不触发渲染，间隔 ≥1 s
 对被测 App 无实质影响。
+
+**帧完成时刻与时钟域**（工单 19 起需要）：``FrameCompleted`` 是设备
+``CLOCK_MONOTONIC`` 纳秒值，与宿主时间轴不同源。故 ``FrameSample.completed_s``
+保留设备时钟域原值；换算靠 ``measure_clock_offset`` 做**括号式**测量（读
+``/proc/uptime`` 前后各取一次宿主时刻取中点，消掉 adb 往返的一半），
+会话结束时测一次即可——本会话内两条时钟的漂移远小于本指标的判据粒度。
 """
 
 from __future__ import annotations
@@ -68,14 +74,23 @@ STAT_METRIC_KEYS = (METRIC_P50, METRIC_P90, METRIC_P99, METRIC_JANK_RATIO, METRI
 DEFAULT_INTERVAL_S = 2.0
 SHELL_TIMEOUT_S = 20.0
 
+# 设备 uptime 读取命令（/proc/uptime 首列即 CLOCK_BOOTTIME 秒）
+UPTIME_PATH = "/proc/uptime"
+
 
 @dataclass(frozen=True)
 class FrameSample:
-    """一帧的耗时与对应刷新周期（毫秒）；vsync_id 用于跨轮去重。"""
+    """一帧的耗时与对应刷新周期（毫秒）；vsync_id 用于跨轮去重。
+
+    ``completed_s`` 为该帧的 ``FrameCompleted`` 换算成的**设备 uptime 秒**
+    （工单 19：整页耗时需要帧时刻，不只是帧时长）。它仍在设备时钟域，
+    换算到会话时间轴是编排层的事（见模块文档与 ``pageflow.clock_offset_s``）。
+    """
 
     vsync_id: str
     duration_ms: float
     interval_ms: float | None
+    completed_s: float | None = None
 
 
 def parse_framestats(text: str) -> list[FrameSample]:
@@ -131,6 +146,7 @@ def _row_to_sample(row: list[str]) -> FrameSample | None:
         vsync_id=row[_COL["vsync_id"]],
         duration_ms=duration_ms,
         interval_ms=_interval_ms(row),
+        completed_s=completed / 1e9,
     )
 
 
@@ -201,13 +217,14 @@ def write_frames_csv(path, samples: list[FrameSample]) -> Any:
         return path
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["vsync_id", "duration_ms", "interval_ms"])
+        writer.writerow(["vsync_id", "duration_ms", "interval_ms", "completed_s"])
         for sample in samples:
             writer.writerow(
                 [
                     sample.vsync_id,
                     round(sample.duration_ms, 3),
                     "" if sample.interval_ms is None else round(sample.interval_ms, 3),
+                    "" if sample.completed_s is None else round(sample.completed_s, 6),
                 ]
             )
     return path
@@ -302,18 +319,7 @@ class FramePoller:
     def _round(self) -> None:
         self._result.rounds += 1
         try:
-            output = self._call(
-                [
-                    "-s",
-                    self.serial,
-                    "shell",
-                    "dumpsys",
-                    "gfxinfo",
-                    self.target,
-                    "framestats",
-                ],
-                SHELL_TIMEOUT_S,
-            )
+            output = self._call(self._round_args(), SHELL_TIMEOUT_S)
         except Exception:  # noqa: BLE001 - 单轮失败只计数，不中断旁路采集
             self._result.errors += 1
             return
@@ -326,8 +332,67 @@ class FramePoller:
             self._seen.add(sample.vsync_id)
             self._result.samples.append(sample)
 
+    def _round_args(self) -> list[str]:
+        return [
+            "-s",
+            self.serial,
+            "shell",
+            "dumpsys",
+            "gfxinfo",
+            self.target,
+            "framestats",
+        ]
+
 
 def _default_call_device(adb_path: str) -> DeviceCaller:
     from .adb import default_call_device
 
     return default_call_device(adb_path)
+
+
+def parse_uptime(text: str) -> float | None:
+    """解析 ``/proc/uptime`` 的首列（设备已开机秒数，含小数）；不可读返回 None。"""
+    for token in (text or "").split():
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        # uptime 非负且远小于一年；其他形态（错误信息里的数字）一律不认
+        if 0.0 <= value < 31_536_000.0:
+            return value
+    return None
+
+
+def measure_clock_offset(
+    call_device: DeviceCaller,
+    serial: str,
+    *,
+    elapsed: Callable[[], float | None],
+    timeout_s: float = SHELL_TIMEOUT_S,
+) -> dict[str, Any] | None:
+    """括号式测「设备时钟 → 会话时间轴」的偏移（帧时刻换算用，工单 19）。
+
+    做法：读 ``/proc/uptime`` 前后各取一次会话相对秒，取中点与 uptime 相减。
+    adb 往返延迟有几十毫秒量级，取中点能把它的**一半**消掉；不取中点就等于
+    把整趟往返都算进偏移里。只测一次即可——同一会话内两条时钟的漂移远小于
+    本指标的判据粒度（300 ms 静默窗口）。
+
+    返回 ``{"offsetS": 偏移, "uptimeS": 设备 uptime, "rttMs": 往返耗时}``；
+    命令失败或 uptime 不可读返回 None（调用方据此如实降级，不猜）。
+    """
+    before = elapsed()
+    try:
+        output = call_device(["-s", serial, "shell", "cat", UPTIME_PATH], timeout_s)
+    except Exception:  # noqa: BLE001 - 测不到偏移就不换算
+        return None
+    after = elapsed()
+    if int(getattr(output, "returncode", 1)) != 0:
+        return None
+    uptime_s = parse_uptime(getattr(output, "stdout", "") or "")
+    if uptime_s is None or before is None or after is None:
+        return None
+    return {
+        "offsetS": (before + after) / 2.0 - uptime_s,
+        "uptimeS": uptime_s,
+        "rttMs": round((after - before) * 1000.0, 3),
+    }

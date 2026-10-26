@@ -450,3 +450,80 @@ def test_fetch_metric_series_skips_runs_without_that_metric(store):
     )
 
     assert store.fetch_metric_series("com.sinosoft.trainapp", "mem_pss_mb") == []
+
+
+# ---- ticket 20：sessions.net_profile 列与旧库迁移 ----
+
+
+def test_session_net_profile_round_trip(store):
+    """档位名+参数整体入 JSON、读出还原为 dict；没跑弱网的是 None 不是空 dict。"""
+    store.record_session(
+        {
+            "run_id": "r-weak",
+            "target": "tv.danmaku.bili",
+            "net_profile": {"name": "weak", "latencyMs": 400.0, "downKbps": 400.0},
+        }
+    )
+    store.record_session({"run_id": "r-plain", "target": "tv.danmaku.bili"})
+
+    rows = {row["run_id"]: row for row in store.fetch_sessions(target="tv.danmaku.bili")}
+
+    assert rows["r-weak"]["net_profile"] == {
+        "name": "weak",
+        "latencyMs": 400.0,
+        "downKbps": 400.0,
+    }
+    assert rows["r-plain"]["net_profile"] is None
+
+
+def test_fetch_session_by_run_id(store):
+    store.record_session({"run_id": "r-x", "target": "tv.danmaku.bili"})
+
+    assert store.fetch_session("r-x")["target_pkg"] == "tv.danmaku.bili"
+    assert store.fetch_session("r-missing") is None
+
+
+def test_old_db_without_net_profile_column_is_migrated(tmp_path):
+    """建库早于工单 20 的库没有 net_profile 列：打开时自动补列，不要求重建。"""
+    db_path = tmp_path / "data" / "mobile_perf.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                run_id          TEXT PRIMARY KEY,
+                solo_session_id TEXT,
+                serial          TEXT,
+                device_profile  TEXT,
+                target_pkg      TEXT,
+                target_version  TEXT,
+                items_json      TEXT,
+                started_at      TEXT,
+                stopped_at      TEXT,
+                duration_s      REAL,
+                sample_count    INTEGER,
+                host_run_id     TEXT,
+                clock_offset_ms INTEGER,
+                status          TEXT,
+                run_dir         TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (run_id, target_pkg) VALUES ('r-old', 'tv.danmaku.bili')"
+        )
+
+    store = PerfStore(db_path)
+    try:
+        # 旧记录照常可读（net_profile 为 NULL），新写入可带档位
+        assert store.fetch_session("r-old")["net_profile"] is None
+        store.record_session(
+            {
+                "run_id": "r-new",
+                "target": "tv.danmaku.bili",
+                "net_profile": {"name": "weak"},
+            }
+        )
+        assert store.fetch_session("r-new")["net_profile"] == {"name": "weak"}
+    finally:
+        store.close()

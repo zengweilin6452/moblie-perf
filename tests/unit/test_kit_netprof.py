@@ -346,3 +346,23 @@ def test_collect_accepts_prebuilt_profile_with_overrides(tmp_path, monkeypatch):
     assert report["network"]["profile"]["name"] == "3g"
     assert report["network"]["profile"]["latencyMs"] == 500.0
     assert report["network"]["profile"]["downKbps"] == 780.0
+
+
+def test_collect_records_net_profile_into_sessions(tmp_path, monkeypatch):
+    """工单 20：本 run 的档位（名+参数）入 sessions 表，作为趋势可比性依据。"""
+    _patch_profiler(monkeypatch, TRAFFIC)
+    kit = make_kit(tmp_path, FakeHarnessBackend(), device_call=_device_call())
+
+    report = _collect(kit, tmp_path, "run-net-tier-1", net_profile="weak")
+
+    row = kit.store.fetch_session(report["runId"])
+    assert row["net_profile"]["name"] == "weak"
+    assert row["net_profile"]["latencyMs"] == 400.0
+
+
+def test_collect_without_net_profile_records_no_tier(tmp_path):
+    kit = make_kit(tmp_path, FakeHarnessBackend())
+
+    report = _collect(kit, tmp_path, "run-net-tier-2")
+
+    assert kit.store.fetch_session(report["runId"])["net_profile"] is None

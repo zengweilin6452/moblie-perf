@@ -194,6 +194,12 @@ METRICS: dict[str, MetricSpec] = {
             "接口错误率", "API error rate",
         ),
         MetricSpec("api_payload_kb", "KB", "pc_supplement", "接口响应大小", "API payload size"),
+        # 整页加载耗时（ticket 19）：从页面打标到画面进入稳定的耗时，末帧稳定口径。
+        # 多页面时一行内放每页一个样本，逐页值见报告 pages 与 page_load 事件
+        MetricSpec(
+            "page_load_ms", "ms", "pc_orchestration",
+            "整页加载耗时", "Page load time",
+        ),
         # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
         # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
         MetricSpec(

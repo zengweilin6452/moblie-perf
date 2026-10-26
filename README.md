@@ -8,8 +8,10 @@
 
 - **采集闭环**：`mobile-perf collect` 一条命令完成 启动 SoloPi 采集 → 计时 → 停止 → 自动 pull → 行数校验 → 聚合入库 → 清理设备端；
 - **无人值守**：SoloPi 告知弹窗"不再提示"开关（App 二开）+ adb 读写通道、tcpip 自愈、无障碍巡检、充电降级、时钟偏移校准、crash/ANR 监听入时间轴；
-- **门禁**：judge 纯函数三态结论（pass / fail / not_tested），阈值由宿主显式传入（不入库），基线绑定设备档案（机型+OS 大版本）严格匹配；
-- **补采**：PC 侧 dumpsys 轮询电池温度（GPU 视机型能力如实降级），与 SoloPi 指标、事件三源同时间轴同图；
+- **门禁**：judge 纯函数三态结论（pass / fail / not_tested），阈值由宿主显式传入（不入库），基线绑定设备档案与网络档位严格匹配；
+- **补采**：PC 侧 dumpsys 轮询电池温度与 GPU 双源利用率/显存（视机型能力如实降级），与 SoloPi 指标、事件三源同时间轴同图；
+- **逐帧与整页**：gfxinfo framestats 逐帧 P50/P90/P99（工单 15）、页面打标到画面视觉稳定的整页加载耗时 `page_load_ms`（工单 19）；
+- **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；
 - **报告**：每 run 双产物——单文件 HTML（内嵌离线 ECharts，断网可看）+ 同内容 JSON；
 - **设备准入**：DeviceGate 短事务协议，与宿主 UI 自动化的整生命周期租约互不阻塞（录制期间不持锁）。
 
@@ -29,8 +31,10 @@ ADB 三级解析：显式参数 > `MOBILE_PERF_ADB`/`ADB` 环境变量 > 随包 
 ```bash
 mobile-perf doctor --serial <serial>                       # 巡检 + 自愈（幂等）
 mobile-perf collect tv.danmaku.bili --items CPU,FPS,Memory --duration 180
+mobile-perf collect tv.danmaku.bili --net-profile weak --frame-poll   # 弱网 + 逐帧 + 整页
 mobile-perf report <runId> --baseline bili-home-v3 --threshold mem_pss_mb:lt:220:fail
 mobile-perf trend tv.danmaku.bili --metric mem_pss_mb
+mobile-perf trend tv.danmaku.bili --metric mem_pss_mb --net-profile weak
 mobile-perf leak com.sinosoft.trainapp --profile Xiaomi-2206123SC-Android14 --slope-threshold 2.0
 ```
 

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     solo_session_id TEXT,
     serial          TEXT,
     device_profile  TEXT,
+    net_profile     TEXT,
     target_pkg      TEXT,
     target_version  TEXT,
     items_json      TEXT,
@@ -106,7 +107,20 @@ class PerfStore:
         self._enable_wal()
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """旧库加列（工单 20）：sessions.net_profile 在首批库上不存在，补上。
+
+        CREATE TABLE IF NOT EXISTS 不会改已有表，只能按 PRAGMA 逐列补。
+        """
+        columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "net_profile" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN net_profile TEXT")
 
     def _enable_wal(self) -> None:
         """切 WAL：并发首连时该 PRAGMA 需要短暂排他锁且不吃 busy_timeout，
@@ -131,16 +145,21 @@ class PerfStore:
         self._conn.execute(
             """
             INSERT OR REPLACE INTO sessions (
-                run_id, solo_session_id, serial, device_profile, target_pkg,
-                target_version, items_json, started_at, stopped_at, duration_s,
-                sample_count, host_run_id, clock_offset_ms, status, run_dir
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, solo_session_id, serial, device_profile, net_profile,
+                target_pkg, target_version, items_json, started_at, stopped_at,
+                duration_s, sample_count, host_run_id, clock_offset_ms, status,
+                run_dir
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session["run_id"],
                 session.get("solo_session_id"),
                 session.get("serial"),
                 session.get("device_profile"),
+                # 网络档位（工单 20）：档位名+整形参数整体入 JSON，与报告一致
+                json.dumps(session.get("net_profile"), ensure_ascii=False)
+                if session.get("net_profile") is not None
+                else None,
                 session.get("target"),
                 session.get("target_version"),
                 json.dumps(session.get("items", []), ensure_ascii=False),
@@ -171,8 +190,27 @@ class PerfStore:
         for row in cursor.fetchall():
             record = dict(zip(columns, row, strict=True))
             record["items"] = json.loads(record.pop("items_json") or "[]")
+            # 网络档位以 JSON 存储（档位名+参数），读出即还原为 dict
+            record["net_profile"] = (
+                json.loads(record["net_profile"])
+                if record.get("net_profile")
+                else None
+            )
             rows.append(record)
         return rows
+
+    def fetch_session(self, run_id: str) -> dict[str, Any] | None:
+        """按 run_id 取单条 session（无则 None）；列语义与 fetch_sessions 一致。"""
+        cursor = self._conn.execute("SELECT * FROM sessions WHERE run_id = ?", (run_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        record = dict(zip([d[0] for d in cursor.description], row, strict=True))
+        record["items"] = json.loads(record.pop("items_json") or "[]")
+        record["net_profile"] = (
+            json.loads(record["net_profile"]) if record.get("net_profile") else None
+        )
+        return record
 
     def record_metrics(self, run_id: str, aggregates: list[dict[str, Any]]) -> None:
         """写入一个 run 的聚合行；同 run 重复写入时按 metric_key 整体替换。"""

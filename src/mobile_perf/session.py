@@ -44,12 +44,26 @@ class SessionSpec:
             )
 
 
+MARK_KIND_MARK = "mark"
+MARK_KIND_PAGE = "page"
+
+
 @dataclass(frozen=True)
 class Mark:
-    """宿主在采集会话内声明的时刻点，elapsed_s 相对会话开始。"""
+    """宿主在采集会话内声明的时刻点，elapsed_s 相对会话开始。
+
+    ``kind`` 区分语义（工单 19）：普通打标是 ``mark``；``page`` 是**页面起点**，
+    整页加载耗时以它为计时原点。两者共用同一条统一时间轴，只是消费方式不同——
+    普通打标只进时间轴，页面打标还会参与 ``page_load_ms`` 判定。
+    """
 
     label: str
     elapsed_s: float
+    kind: str = MARK_KIND_MARK
+
+    @property
+    def is_page(self) -> bool:
+        return self.kind == MARK_KIND_PAGE
 
 
 @dataclass
@@ -67,7 +81,15 @@ class SessionRecord:
     stop_payload: dict[str, Any] = field(default_factory=dict)
 
     def marks_as_list(self) -> list[dict[str, Any]]:
-        return [{"label": m.label, "elapsedS": round(m.elapsed_s, 3)} for m in self.marks]
+        """打标列表（报告形状）。普通打标只给 label/elapsedS（既有契约不变）；
+        页面打标额外带 ``kind=page``——用增字段而非改字段，旧消费方不受影响。"""
+        items: list[dict[str, Any]] = []
+        for mark in self.marks:
+            item: dict[str, Any] = {"label": mark.label, "elapsedS": round(mark.elapsed_s, 3)}
+            if mark.is_page:
+                item["kind"] = mark.kind
+            items.append(item)
+        return items
 
 
 class CollectSession:
@@ -120,11 +142,33 @@ class CollectSession:
         self.marks.append(mark)
         return mark
 
+    def mark_page(self, page: str) -> Mark:
+        """声明一个**页面起点**（工单 19）：整页加载耗时从这一刻算起。
+
+        与 ``mark`` 的区别只在语义与消费方式：本方法落 ``kind=page``，
+        编排层据此把该时刻作为 ``page_load_ms`` 的计时原点。同一页面名可多次
+        打标（如同一页面重进），各自独立出一条结论。
+        """
+        if not page:
+            raise ValueError("page 不能为空")
+        self._require_started("mark_page")
+        mark = Mark(
+            label=page,
+            elapsed_s=self._clock() - self._started_mono,
+            kind=MARK_KIND_PAGE,
+        )
+        self.marks.append(mark)
+        return mark
+
     def elapsed_s(self) -> float | None:
         """当前时刻相对会话开始的秒数（统一时间轴读数）；未开始返回 None。"""
         if self._started_mono is None:
             return None
         return self._clock() - self._started_mono
+
+    def page_marks(self) -> list[Mark]:
+        """本会话声明的全部页面起点（按声明顺序）。"""
+        return [mark for mark in self.marks if mark.is_page]
 
     def stop(self, output_dir: str) -> SessionRecord:
         self._require_started("stop")

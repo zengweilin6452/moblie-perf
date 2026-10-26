@@ -165,6 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
     trend_parser.add_argument(
         "--profile", help="设备档案（跨档案 run 存在时必须显式指定）"
     )
+    trend_parser.add_argument(
+        "--net-profile",
+        choices=netprof.PROFILE_NAMES,
+        help="网络档位（工单 20：跨档位 run 存在时必须显式指定，如 weak）",
+    )
     trend_parser.add_argument("--serial", help="设备 serial（趋势只读库，不连设备）")
     trend_parser.add_argument("--adb", help="adb 可执行文件路径（默认走三级解析）")
     trend_parser.add_argument("--db", help="SQLite 路径（默认 <repo>/data/mobile_perf.db）")
@@ -175,6 +180,11 @@ def build_parser() -> argparse.ArgumentParser:
     leak_parser.add_argument("pkg", help="被测应用包名")
     leak_parser.add_argument(
         "--profile", help="设备档案（跨档案 run 存在时必须显式指定）"
+    )
+    leak_parser.add_argument(
+        "--net-profile",
+        choices=netprof.PROFILE_NAMES,
+        help="网络档位（工单 20：跨档位 run 存在时必须显式指定，如 weak）",
     )
     leak_parser.add_argument(
         "--min-runs", type=int, default=None, help="回归所需 run 数下限（默认 3）"
@@ -450,7 +460,10 @@ def _run_trend(args: argparse.Namespace, kit_factory=None) -> int:
         kwargs["serial"] = args.serial
     kit = _build_kit(kit_factory, **kwargs)
     try:
-        trend = kit.trend(args.pkg, args.metric, profile=args.profile)
+        trend = kit.trend(
+            args.pkg, args.metric, profile=args.profile,
+            net_profile=args.net_profile,
+        )
     except ProfileMismatchError as exc:
         print(f"[mobile-perf] trend 口径不一致: {exc}", file=sys.stderr)
         return 1
@@ -475,7 +488,9 @@ def _run_leak(args: argparse.Namespace, kit_factory=None) -> int:
         extra["slope_threshold"] = args.slope_threshold
         extra["level"] = args.level
     try:
-        leak_trend = kit.leak_trend(args.pkg, profile=args.profile, **extra)
+        leak_trend = kit.leak_trend(
+            args.pkg, profile=args.profile, net_profile=args.net_profile, **extra
+        )
     except ProfileMismatchError as exc:
         print(f"[mobile-perf] leak 口径不一致: {exc}", file=sys.stderr)
         return 1

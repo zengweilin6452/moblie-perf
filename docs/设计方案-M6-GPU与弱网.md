@@ -3,7 +3,7 @@
 > 前置：M1–M5 已完成（14 张工单，426 unit/contract 全绿）。本文只描述 **M6 增量**。
 > 术语以 [GLOSSARY.md](../GLOSSARY.md) 为准；新术语在 §11 登记。
 > 实测环境：真机 `749622c9`（Xiaomi 2206123SC / Adreno 730 / Android 14），被测 `com.sinosoft.trainapp` v1.9.77（targetSdk 36）。
-> 定稿日期：2026-10-25。
+> 定稿日期：2026-10-25；实施收口（工单 15–20 全部落地）：2026-10-27。
 
 ---
 
