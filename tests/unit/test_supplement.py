@@ -10,7 +10,9 @@ class TestParseGpubusy:
         assert supplement.parse_gpubusy("  280749 1008311\n") == 280749 * 100.0 / 1008311
 
     def test_zero_zero_is_idle_not_unknown(self):
-        # total==0 且 busy==0 表示该窗口 GPU 空闲，是有效读数 0%，不是"读不到"
+        # total==0 且 busy==0 表示该窗口 GPU 空闲，是有效读数 0%，不是"读不到"。
+        # 注意：部分机型（Adreno840v2/Android 17）在重负载中也会瞬时读到 `0 0`，
+        # 故这条只锁定"不当成读不到"，不宣称 `0 0` 必然是空闲（方案 §2.1a）。
         assert supplement.parse_gpubusy("0 0\n") == 0.0
 
     def test_busy_with_zero_total_is_rejected(self):

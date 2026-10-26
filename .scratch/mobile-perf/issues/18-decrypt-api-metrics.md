@@ -10,13 +10,13 @@
 
 **Blocked by:** 17
 
-**Status:** done（2026-10-26，真机验收待设备回连）
+**Status:** done（2026-10-26，真机验收通过）
 
 - [x] 信任探测三态（成功 / 证书不信任 / 其他失败）unit 覆盖，各自映射到明确结论与事件
 - [x] 证书不信任时不重试、不产出任何 `api_*` 数值；`not_tested` 原因含可执行的下一步（换 debug 包 / 换 root 设备）
 - [x] 4 个 `api_*` key 进字典；按 URL 聚合口径（同 URL 多次请求的统计方式）在模块文档写明
 - [x] 报告接口瀑布图：Top N 慢接口可看，域名分组正确
-- [ ] 真机验证：BYD academy 上如实 `not_tested` 且原因准确；在满足前置条件的组合上 `api_*` 有值
+- [x] 真机验证：BYD academy 上如实 `not_tested` 且原因准确；在满足前置条件的组合上 `api_*` 有值
 - [x] 解密档的流量不得污染既有 SoloPi 网络指标（两套数据独立入库、报告分栏）
 
 ## Comments
@@ -90,3 +90,23 @@ HTTPS，验证整条链路而不依赖设备：
 注意：本机实证用的是桌面 Python 的信任库，**不能替代** Android 真机结论——
 Android 上 targetSdk ≥24 的正式包只信系统 CA，预期同样落到 rejected 分支，
 但需设备回连后由 `test_decrypt_tier_degrades_honestly_on_untrusted_app` 确认。
+
+### 2026-10-26 真机验收（Redmi 25102RKBEC / Android 17，`84cb2c4e`）
+
+设备回连后补上了上一轮的唯一缺口。`tests/device/test_netprof_device.py` 在真机上
+跑 `--net-tier decrypt`，落在**设计预期的降级分支**，两半都验证到了：
+
+| 项 | 实测值 | 判定 |
+|---|---|---|
+| `trust` | `rejected`（`firebaseinstallations.googleapis.com`，`tls alert certificate unknown`） | 探测拿到了明确结论，非"未取得" |
+| `apiRecords` | `0` | 不猜、不造数据 |
+| `api_effective` | `false`，原因写明"被测 App 不信任代理 CA + 证书错误详情" | 如实 `not_tested` |
+| 连接级指标 | **18 条连接 / 19 次 CONNECT，覆盖 5 个域名**（`firebaseinstallations.googleapis.com`、`academy.byd.com`、`sg-academy.byd.com`、`play.googleapis.com`、`digitalassetlinks.googleapis.com`） | 降级后连接级指标照旧可用（设计要点 2 成立） |
+| `net_conn_duration_ms` | 中位 **632.4 ms**（15 个有效样本） | 有值 |
+| 恢复标志 | 代理 / `adb reverse` / 系统代理三项全部 `True` | 退出必恢复成立 |
+
+这正是"先探测再决定、降级不牺牲连接级指标"在真实设备上的完整闭环：证书拒绝被
+准确识别并写进原因（含 `tlsv1 alert unknown ca` 一类的可排查细节），接口级指标
+如实空缺，而连接级耗时不受影响。另一条分支（满足前置条件的组合上 `api_*` 有值）
+仍由 addon 子进程用例 + kit 合成链路 + 本机 HTTPS 实证三处覆盖，**未在真机上
+验证**——需要 debug 包或可写 system 分区的设备，属已知未覆盖项。

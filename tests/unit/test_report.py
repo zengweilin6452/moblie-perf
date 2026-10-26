@@ -622,6 +622,7 @@ def test_write_html_renders_gpu_section_with_actual_source(tmp_path):
     assert "应用GPU显存" in html
     assert "gpubusy" in html
     assert "窗口平均" in html  # 口径限定：非瞬时值
+    assert "不可跨机型比较" in html  # §2.1a：同一负载在不同 GPU/系统上可差一倍以上
     assert "125.4" in html
 
 

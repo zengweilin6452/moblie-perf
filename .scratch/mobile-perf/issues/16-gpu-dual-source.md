@@ -10,12 +10,12 @@
 
 **Blocked by:** 15（复用其轮询线程与降级记录扩展点）
 
-**Status:** done（2026-10-26，真机验收待设备回连）
+**Status:** done（2026-10-26，两台真机验收通过）
 
 - [x] `gpubusy` 解析器纯函数：正常值、`0 0`（空闲）、`total=0`、格式异常四种分支 unit 覆盖
 - [x] 三级降级链逐级可测：kgsl 不可读 → 落 dumpsys gpu → 仍不可得 → `not_tested` + 具体原因
 - [x] `gpu_mem_mb` 按 pid 取到目标进程显存；pid 解析失败时 `not_tested` 而非取错进程
-- [ ] 真机验证：滑动负载下 `gpu_util_pct` 有非零值，与 M5 的"永远 not_tested"形成对比
+- [x] 真机验证：滑动负载下 `gpu_util_pct` 有非零值，与 M5 的"永远 not_tested"形成对比
 - [x] 指标字典 + 双语标签 + 报告呈现（与 CPU/内存同图）
 
 ## Comments
@@ -62,3 +62,38 @@
   含"窗口平均"限定，均符合预期。
 - `gpubusy` 的窗口与采样时刻存在错位（采样间隔 2s、驱动窗口约 1s），只报聚合
   是对这一错位的如实处理，不是精度提升。
+
+### 2026-10-26 真机验收（Redmi 25102RKBEC / Adreno840v2 / Android 17，`84cb2c4e`）
+
+前一轮"设备离线"的缺口已补。`tests/device/test_supplement_device.py` 的两个纯补采用例
+在真机上通过（`test_supplement_poller_round_on_real_device`、
+`test_gpu_mem_tracks_target_process_on_real_device`）：
+
+| 项 | 实测值 |
+|---|---|
+| `gpu_source` | `kgsl_gpubusy`（第一级源命中，未降级） |
+| `degraded` | `[]`（三级降级链一级都没触发） |
+| `gpu_util_pct` | 有值：中位 ~23%、P90 23.63%、最大 33.76%（另一轮 4 样本 7.14 / 23.11 / 30.32 / 29.65） |
+| `gpu_mem_mb` | 有值：8.33 MB（另一轮 77.91 MB；随目标进程当前占用变化） |
+| `gpu_mem_mb` 独立核对 | `dumpsys gpu` 中 `Proc 15547 total: 8732672` 与目标 pid 一致，非 `Global total` |
+| `temp_battery_c` | 37.5 °C |
+
+**同时发现一个必须记录的跨机型差异**（详见 M6 方案 §2.1a）：本机型上
+`gpubusy` 比值**不随负载单调变化**——静止桌面稳定 ~49.3%（3 轮 55 次采样，0 次
+`0 0`），App 内持续滑动反而 ~26%（4 轮 75 次采样，17 次 `0 0`）。与 749622c9
+（Adreno 730 / Android 14：静止 `0 0`、滑动 7%–35%）语义相反。因此：
+
+- 比值口径（窗口内平均占用）仍成立，**绝对值不可跨机型比较**，阈值必须按机型建档；
+- `0 0` 不是跨机型的"空闲"证据，在重负载中也会瞬时读到；保留 `0 0 → 0%`
+  （工单 16 既定语义）记为**已知低估偏差**，靠聚合与样本量吸收；
+- 本机型 `ls /sys/class/kgsl/kgsl-3d0/` 也 Permission denied（只能按固定路径 `cat`），
+  降级链不能靠列目录发现新节点。
+
+已同步写入 `docs/设计方案-M6-GPU与弱网.md` §2.1a / §10 风险表、`supplement.py`
+模块文档与 `parse_gpubusy` docstring、报告 GPU 小节提示文案、`GLOSSARY.md`
+「GPU 窗口占用率」。
+
+**本轮未覆盖**：`test_supplement_ingestion_full_loop_on_real_device`（补采 + SoloPi
+入库全链路）在本机 `84cb2c4e` 上失败于 `perf-start 失败: 所选设备未安装 SoloPi`——
+该机型没有装自编译 SoloPi（749622c9 上装过）。这是**设备环境缺口，不是代码缺陷**：
+补采本身的两条真机用例都通过，入库链路由 unit/contract 的合成链路用例覆盖。

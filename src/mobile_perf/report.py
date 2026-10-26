@@ -580,7 +580,10 @@ def _gpu_markup(report: dict[str, Any]) -> str:
         "<th>P90</th><th>最大 / Max</th><th>样本 / Samples</th><th>单位 / Unit</th></tr>"
         f"{''.join(rows)}</table>",
         f"<p>数据源 / Source：{source_text}。"
-        "利用率与显存只报聚合（median/p90/max），不承诺逐点序列与真实瞬时负载对齐。</p>",
+        "利用率与显存只报聚合（median/p90/max），不承诺逐点序列与真实瞬时负载对齐。"
+        "该比值的语义按机型不同（同一负载在不同 GPU/系统上可差一倍以上，"
+        "部分机型静止桌面读数高于滑动负载），"
+        "绝对值不可跨机型比较，阈值须按机型建档。</p>",
     ]
     if degraded:
         items = "；".join(

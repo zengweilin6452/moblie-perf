@@ -15,6 +15,12 @@ gpu_mem_mb）。真机不支持某项时如实降级（degraded），不硬造�
 且会回落），比值得出的是窗口内平均占用率，**不是瞬时值**。因此只报聚合
 （median/p90/max），不承诺逐点序列与真实瞬时负载对齐。
 
+**比值的语义按机型不同，绝对值不可跨机型比较**（M6 方案 §2.1a 两台真机实测）：
+Adreno 730 / Android 14 静止读 `0 0`、滑动 7%–35%；Adreno840v2 / Android 17 静止
+桌面稳定 ~49%、滑动反而 ~26%，且滑动中会偶发 `0 0`。所以 `0 0` **不是**跨机型的
+"GPU 空闲"证据，这里保留 `0 0 → 0.0` 只是沿用既有口径（在 730 上正确），在会偶发
+`0 0` 的机型上属已知低估，靠聚合与足够样本量吸收。阈值必须按机型建档。
+
 `gpu_mem_mb` 取 `dumpsys gpu` 的 `Proc <pid> total` 字节数（按 1024² 换算）。
 pid 由 `pidof <pkg>` 解析：**恰好一个**才采用，零个或多个一律不猜，如实降级。
 """
@@ -89,9 +95,10 @@ def parse_gpu_utilization(stdout: str) -> float | None:
 def parse_gpubusy(stdout: str) -> float | None:
     """把 kgsl `gpubusy` 的 `busy total` 换算成窗口平均占用率（%）。
 
-    四种分支：正常值 → 比值；`0 0`（该窗口 GPU 空闲）→ 0.0；
-    `total` 为 0 但 `busy` 非 0（驱动窗口刚重置）→ None，不硬算；
-    格式异常（空输出、非数字、多行噪声）→ None。>100% 同样视为异常。
+    四种分支：正常值 → 比值；`0 0`（该窗口 GPU 空闲，但部分机型在重负载中也会
+    瞬时读到，见模块文档）→ 0.0；`total` 为 0 但 `busy` 非 0（驱动窗口刚重置）
+    → None，不硬算；格式异常（空输出、非数字、多行噪声）→ None。>100% 同样视为
+    异常。
     """
     for line in (stdout or "").splitlines():
         match = GPUBUSY_RE.match(line.strip())
