@@ -780,8 +780,10 @@ def _pages_meta(**overrides):
         "quietGapMs": 300.0,
         "timeoutMs": 15000.0,
         "clockOffsetS": -1000.025,
-        "clockOffsetSource": "uptime_bracket",
-        "clockRttMs": 50.0,
+        "clockOffsetSource": "frame_anchor",
+        "clockAnchorCount": 12,
+        "clockPrecisionMs": 25.0,
+        "clockSpreadMs": 180.0,
         "status": "ok",
         "pages": [
             {"page": "home", "status": "ok", "t0S": 1.0, "pageLoadMs": 1200.0,
@@ -836,21 +838,36 @@ def test_write_html_page_section_explains_clock_offset_source(tmp_path):
 
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
-    assert "括号式 uptime 实测换算" in html
-    assert "往返 50.0 ms" in html  # 对齐误差量级必须写出来
+    assert "逐帧轮询锚点换算" in html
+    assert "12 个锚点" in html  # 偏移由几轮锚点估出来的必须写出来
+    assert "±25.0 ms" in html  # 可信度必须写出来，否则读者无从判断 700 ms 准不准
 
 
 def test_write_html_page_section_says_why_no_clock_offset(tmp_path):
     built = report.build_report(
         meta=_meta(), record=_record(), artifacts=[],
-        pages=_pages_meta(clockOffsetS=None, clockOffsetSource="no_uptime_offset",
-                          clockRttMs=None, status="degraded", pages=[]),
+        pages=_pages_meta(clockOffsetS=None, clockOffsetSource="no_frames_anchor",
+                          clockAnchorCount=None, clockSpreadMs=None,
+                          status="degraded", pages=[]),
     )
 
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
-    assert "未取到设备 uptime" in html
+    assert "没有可用帧时刻" in html
     assert "本 run 不硬算" in html
+
+
+def test_write_html_page_section_says_frames_were_never_polled(tmp_path):
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta(clockOffsetS=None, clockOffsetSource="no_frame_poll",
+                          clockAnchorCount=None, clockSpreadMs=None,
+                          status="degraded", pages=[]),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "未开启逐帧采集" in html
 
 
 def test_page_markline_appends_to_startup_markline(tmp_path):

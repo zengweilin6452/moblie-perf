@@ -13,13 +13,14 @@
 
 **Blocked by:** 15（帧时刻序列）、17（弱网档位下整页耗时才有对比价值）
 
-**Status:** done（2026-10-27，unit 全绿；真机验收阻塞——设备 84cb2c4e 离线）
+**Status:** done（2026-10-29，unit 全绿 + 真机单档验收通过；弱网档对比仍缺 mitmdump）
 
 - [x] 稳定判定纯函数：合成帧序列覆盖「快速加载」「慢速加载」「无限动画（超时）」「零帧」「首帧即静默」五分支（test_pageflow.py 16 例，另含中途停顿、乱序、观测不足、超限不裁剪）
 - [x] `mark_page` 与既有 `mark` 语义区分清晰，事件 kind 与时间轴对齐正确（marks 仅 page 标带 kind 字段，普通标契约不变）
 - [x] `page_load_ms` 进指标字典并入库（source=pc_orchestration）；多页面每页一个样本（metrics 表主键 (run_id, metric_key) 容不下多行，逐页值进报告 pages 与事件）
-- [x] 超时与不可判定场景如实 `not_tested`，原因写明（无限动画/超时/未开逐帧/取不到 uptime 偏移，四路原因互不混淆）
-- [ ] 真机验证：BYD academy 首页 `page_load_ms` 有值，且 `none` 与 `weak` 两档下数值差异符合预期（**阻塞**：验收期间设备 84cb2c4e adb 离线；unit 侧全链路已用合成 framestats+/proc/uptime 替身覆盖）
+- [x] 超时与不可判定场景如实 `not_tested`，原因写明（无限动画/超时/未开逐帧/无帧锚点，四路原因互不混淆）
+- [x] 真机验证（2026-10-29，749622c9 / 2206123SC-Android14）：BYD 培训 App 两页 `page_load_ms` 有值（740/549 ms 与 2607/381 ms 两轮），`clockOffsetSource=frame_anchor`、9 个锚点、`clockPrecisionMs=47 ms`；两轮偏移差 28.5 s 与两次运行的墙钟间隔一致
+- [ ] `none` 与 `weak` 两档整页耗时对比（**阻塞**：本机无 `mitmdump`，弱网档无法真正生效；单档真机值已验证）
 - [x] 报告呈现整页耗时（逐页表格 + 时间轴标注追加到启动竖线不互相覆盖），并与启动耗时区分展示
 
 ## Comments
@@ -28,4 +29,8 @@
 
 - **2026-10-27 实施记录**：新增 `pageflow.py`（纯计算：末帧稳定口径，四态 ok/timeout/no_frames/incomplete）；`frameinfo` 增 `completed_s` 列与括号式 `measure_clock_offset`（读 /proc/uptime 前后各测一次宿主时钟取中点，半程往返抵消，rttMs 随报告留档）；`session` 增 `mark_page/page_marks`（Mark.kind）；`kit.finalize` 在有页面标时换算帧时刻、算逐页结论、入库/事件/not_tested 标注；报告新增逐页表格与时间轴标注（与启动竖线追加共存）。
 - 时钟域说明：`FrameCompleted` 是设备 CLOCK_MONOTONIC，`/proc/uptime` 是 CLOCK_BOOTTIME，二者差累计休眠时间；交互式会话屏幕常亮时按 uptime 换算，若会话中设备休眠过则整页值整体偏移（模块文档已记）。
-- 遗留：真机两档对比验收待设备恢复后补（不宣称已验收）。
+- **2026-10-29 真机复验推翻初版时钟换算**（两个缺陷，均已修）：
+  1. `/proc/uptime` 是 BOOTTIME（含休眠），与 MONOTONIC 差**累计休眠**。实测该机帧时刻 86054 s 而 uptime 371789 s，差 285734 s（3.3 天），全部帧被推到页面起点之前，两页齐判 `no_frames`——**任何睡过觉的设备都会中招**。改为**帧锚点法**（`estimate_clock_offset`）：每轮把宿主会话时刻中点与该轮最新帧时刻配对，取候选最小值；不依赖任何额外设备时钟源，也不受休眠影响。顺带给出 `clockPrecisionMs`（选中轮的半个 adb 往返，实测 47 ms）。
+  2. 锚点第一版把宿主侧取成**绝对单调读数**，而页面打标是**会话相对秒**，两套原点混算使帧时刻整体落在 +7357 s，两页齐判 `timeout`。锚点必须与 `mark_page` 同一条时间轴（`CollectScope` 把 `session.elapsed_s` 传给轮询器），回归测试用 50000 s 基数的假时钟守住这一点。
+- `scripts/perf_full_flow.py`：页面打标原本放在 `sleep(swipe_gap)` **之后**，等于以"上一页已加载完"为起点；改为紧跟触发翻页的那一下。另加 `--allow-degraded`（SoloPi 端内 adb 权限未开时巡检 ok=False，但采集本身可用）。
+- 遗留：`none`/`weak` 两档对比待装 mitmdump 后补（不宣称已验收）。

@@ -577,12 +577,14 @@ def _page_markup(report: dict[str, Any]) -> str:
         )
     offset_source = str(pages.get("clockOffsetSource") or "")
     offset_text = {
-        "uptime_bracket": "括号式 uptime 实测换算（读一次 /proc/uptime，往返取中点）",
-        "no_uptime_offset": "未取到设备 uptime，帧时刻无法换算，本 run 不硬算",
+        "frame_anchor": "逐帧轮询锚点换算（每轮宿主时刻与最新帧时刻配对取最小）",
+        "no_frames_anchor": "逐帧窗口内没有可用帧时刻，无法换算，本 run 不硬算",
         "no_frame_poll": "未开启逐帧采集，没有帧完成时刻",
     }.get(offset_source, offset_source or "未知")
-    if pages.get("clockRttMs") is not None:
-        offset_text += f"（往返 {pages['clockRttMs']} ms，对齐误差为往返量级）"
+    if pages.get("clockAnchorCount") is not None:
+        offset_text += f"；{pages['clockAnchorCount']} 个锚点"
+        if pages.get("clockPrecisionMs") is not None:
+            offset_text += f"，误差不超过 ±{pages['clockPrecisionMs']} ms（半个 adb 往返）"
     parts = [
         "<h2>整页加载耗时 / Page load</h2>",
         '<table class="page-load"><tr><th>页面 / Page</th><th>整页耗时 / Load (ms)</th>'

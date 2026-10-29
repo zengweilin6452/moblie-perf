@@ -23,10 +23,16 @@
 对被测 App 无实质影响。
 
 **帧完成时刻与时钟域**（工单 19 起需要）：``FrameCompleted`` 是设备
-``CLOCK_MONOTONIC`` 纳秒值，与宿主时间轴不同源。故 ``FrameSample.completed_s``
-保留设备时钟域原值；换算靠 ``measure_clock_offset`` 做**括号式**测量（读
-``/proc/uptime`` 前后各取一次宿主时刻取中点，消掉 adb 往返的一半），
-会话结束时测一次即可——本会话内两条时钟的漂移远小于本指标的判据粒度。
+``CLOCK_MONOTONIC`` 纳秒值（不含休眠），与宿主时间轴不同源。故
+``FrameSample.completed_s`` 保留设备时钟域原值；换算靠**逐帧轮询自身的锚点**
+（``estimate_clock_offset``）：每轮记录宿主时钟中点与该轮读到的最新帧时刻，
+二者之差即"设备时钟→宿主时钟"的偏移估计，取各轮最小值——空闲轮只会让最新帧
+显得更旧（偏移偏大），渲染密集的轮次最接近真值。
+
+为什么不用 ``/proc/uptime``（工单 19 初版做法，真机验证后废弃）：``/proc/uptime``
+是 ``CLOCK_BOOTTIME``（**含**休眠），与 ``CLOCK_MONOTONIC`` 差累计休眠时间。
+实测设备累计休眠 3.3 天时两者差 285734 s，整页耗时全部被误判为"页面起点之后
+没有帧"。帧锚点法只依赖帧流自身，不需要任何额外时钟源，也不受休眠影响。
 """
 
 from __future__ import annotations
@@ -74,17 +80,14 @@ STAT_METRIC_KEYS = (METRIC_P50, METRIC_P90, METRIC_P99, METRIC_JANK_RATIO, METRI
 DEFAULT_INTERVAL_S = 2.0
 SHELL_TIMEOUT_S = 20.0
 
-# 设备 uptime 读取命令（/proc/uptime 首列即 CLOCK_BOOTTIME 秒）
-UPTIME_PATH = "/proc/uptime"
-
-
 @dataclass(frozen=True)
 class FrameSample:
     """一帧的耗时与对应刷新周期（毫秒）；vsync_id 用于跨轮去重。
 
-    ``completed_s`` 为该帧的 ``FrameCompleted`` 换算成的**设备 uptime 秒**
-    （工单 19：整页耗时需要帧时刻，不只是帧时长）。它仍在设备时钟域，
-    换算到会话时间轴是编排层的事（见模块文档与 ``pageflow.clock_offset_s``）。
+    ``completed_s`` 为该帧 ``FrameCompleted`` 的**设备单调时钟秒**
+    （CLOCK_MONOTONIC，不含休眠；工单 19：整页耗时需要帧时刻，不只是帧时长）。
+    它仍在设备时钟域，换算到会话时间轴由 ``estimate_clock_offset`` 给出的偏移
+    完成（见模块文档）。
     """
 
     vsync_id: str
@@ -237,12 +240,17 @@ DeviceCaller = Callable[..., Any]  # call_device(args, timeout_s) -> .stdout/.re
 
 @dataclass
 class FrameResult:
-    """一次逐帧轮询的结论：样本、轮询/失败计数与 reset 是否成功。"""
+    """一次逐帧轮询的结论：样本、轮询/失败计数与 reset 是否成功。
+
+    ``offset`` 是设备时钟到宿主时间轴的偏移估计（``estimate_clock_offset``），
+    窗口内一帧都没读到时为 None——此时整页耗时也无法判定，调用方据此如实降级。
+    """
 
     samples: list[FrameSample] = field(default_factory=list)
     rounds: int = 0
     errors: int = 0
     reset_ok: bool = False
+    offset: dict[str, Any] | None = None
 
 
 class FramePoller:
@@ -261,6 +269,7 @@ class FramePoller:
         interval_s: float = DEFAULT_INTERVAL_S,
         call_device: DeviceCaller | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        elapsed: Callable[[], float] = time.monotonic,
     ):
         if interval_s <= 0:
             raise ValueError("interval_s 必须为正数")
@@ -270,10 +279,13 @@ class FramePoller:
         self.interval_s = interval_s
         self._call = call_device or _default_call_device(adb_path)
         self._sleep = sleep
+        # 宿主时钟：每轮记一次中点，与当轮最新帧时刻配对成锚点（见模块文档）
+        self._elapsed = elapsed
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._result = FrameResult()
         self._seen: set[str] = set()
+        self._anchors: list[dict[str, float]] = []
 
     @property
     def rounds(self) -> int:
@@ -299,6 +311,7 @@ class FramePoller:
             rounds=self._result.rounds,
             errors=self._result.errors,
             reset_ok=self._result.reset_ok,
+            offset=estimate_clock_offset(self._anchors),
         )
 
     def _reset(self) -> bool:
@@ -318,15 +331,31 @@ class FramePoller:
 
     def _round(self) -> None:
         self._result.rounds += 1
+        before = self._elapsed()
         try:
             output = self._call(self._round_args(), SHELL_TIMEOUT_S)
         except Exception:  # noqa: BLE001 - 单轮失败只计数，不中断旁路采集
             self._result.errors += 1
             return
+        after = self._elapsed()
         if int(getattr(output, "returncode", 1)) != 0:
             self._result.errors += 1
             return
-        for sample in parse_framestats(getattr(output, "stdout", "") or ""):
+        parsed = parse_framestats(getattr(output, "stdout", "") or "")
+        # 锚点用**本轮读到的全部帧**的最新时刻（不是去重后的新增帧）：同一帧在
+        # 后续轮次重复出现时，它的时刻仍然证明"设备此刻离这个时刻不远"
+        completed = [s.completed_s for s in parsed if s.completed_s is not None]
+        if completed:
+            self._anchors.append(
+                {
+                    "hostMidS": (before + after) / 2.0,
+                    "maxFrameS": max(completed),
+                    # 本轮 adb 往返：最新帧若产生于本轮，其时刻必落在该区间内，
+                    # 故中点配对的不确定度是半个往返（见 estimate_clock_offset）
+                    "callS": max(0.0, after - before),
+                }
+            )
+        for sample in parsed:
             if sample.vsync_id in self._seen:
                 continue
             self._seen.add(sample.vsync_id)
@@ -350,49 +379,35 @@ def _default_call_device(adb_path: str) -> DeviceCaller:
     return default_call_device(adb_path)
 
 
-def parse_uptime(text: str) -> float | None:
-    """解析 ``/proc/uptime`` 的首列（设备已开机秒数，含小数）；不可读返回 None。"""
-    for token in (text or "").split():
-        try:
-            value = float(token)
-        except ValueError:
-            continue
-        # uptime 非负且远小于一年；其他形态（错误信息里的数字）一律不认
-        if 0.0 <= value < 31_536_000.0:
-            return value
-    return None
+def estimate_clock_offset(anchors: list[dict[str, float]]) -> dict[str, Any] | None:
+    """从逐帧轮询的锚点估计「设备时钟 → 宿主时间轴」的偏移（工单 19）。
 
+    每个锚点是一轮轮询的 ``{"hostMidS": 宿主时钟中点, "maxFrameS": 该轮读到的
+    最新帧完成时刻}``，二者相减即该轮的偏移候选：``hostMidS - maxFrameS``。
 
-def measure_clock_offset(
-    call_device: DeviceCaller,
-    serial: str,
-    *,
-    elapsed: Callable[[], float | None],
-    timeout_s: float = SHELL_TIMEOUT_S,
-) -> dict[str, Any] | None:
-    """括号式测「设备时钟 → 会话时间轴」的偏移（帧时刻换算用，工单 19）。
+    取**最小值**而不是中位/均值：最新帧只会比"此刻"更旧（App 空闲时更旧得多），
+    所以每轮候选都 ≥ 真值，最小者最接近真值。渲染密集的轮次（页面加载期间）
+    误差在一帧量级，远小于 300 ms 的静默判据。
 
-    做法：读 ``/proc/uptime`` 前后各取一次会话相对秒，取中点与 uptime 相减。
-    adb 往返延迟有几十毫秒量级，取中点能把它的**一半**消掉；不取中点就等于
-    把整趟往返都算进偏移里。只测一次即可——同一会话内两条时钟的漂移远小于
-    本指标的判据粒度（300 ms 静默窗口）。
+    ``spreadMs`` 是候选的极差——它反映窗口内的空闲程度，不是误差上界；锚点
+    只有一轮时无参考价值，置 0。``precisionMs`` 才是可信度：最新帧若产生于该轮
+    adb 往返之内，其时刻必落在区间里，中点配对的误差不超过**半个往返**。
 
-    返回 ``{"offsetS": 偏移, "uptimeS": 设备 uptime, "rttMs": 往返耗时}``；
-    命令失败或 uptime 不可读返回 None（调用方据此如实降级，不猜）。
+    没有锚点返回 None（调用方据此如实降级）。
     """
-    before = elapsed()
-    try:
-        output = call_device(["-s", serial, "shell", "cat", UPTIME_PATH], timeout_s)
-    except Exception:  # noqa: BLE001 - 测不到偏移就不换算
+    candidates = [
+        (float(anchor["hostMidS"]) - float(anchor["maxFrameS"]), anchor)
+        for anchor in anchors
+        if anchor.get("hostMidS") is not None and anchor.get("maxFrameS") is not None
+    ]
+    if not candidates:
         return None
-    after = elapsed()
-    if int(getattr(output, "returncode", 1)) != 0:
-        return None
-    uptime_s = parse_uptime(getattr(output, "stdout", "") or "")
-    if uptime_s is None or before is None or after is None:
-        return None
+    best, best_anchor = min(candidates, key=lambda item: item[0])
+    values = [value for value, _anchor in candidates]
     return {
-        "offsetS": (before + after) / 2.0 - uptime_s,
-        "uptimeS": uptime_s,
-        "rttMs": round((after - before) * 1000.0, 3),
+        "offsetS": best,
+        "anchors": len(candidates),
+        "spreadMs": round((max(values) - best) * 1000.0, 3),
+        "precisionMs": round(float(best_anchor.get("callS") or 0.0) * 500.0, 3),
+        "source": "frame_anchor",
     }

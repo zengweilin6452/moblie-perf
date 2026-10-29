@@ -40,14 +40,32 @@ class FakeHarnessBackend:
         }
 
 
+class _StepClock:
+    """按预置序列前进的会话时钟，序列用尽后停在末值。
+
+    逐帧轮询器读的是同一个会话时钟（每轮两次），固定长度的迭代器会被旁路
+    线程读空；停在末值既保留既有断言（0.0 → 30.0），又不会让轮询线程
+    把序列耗尽。
+    """
+
+    def __init__(self, values):
+        self._values = list(values)
+        self._last = self._values[0]
+
+    def __call__(self):
+        if self._values:
+            self._last = self._values.pop(0)
+        return self._last
+
+
 def make_kit(tmp_path, backend, **kwargs):
-    clocks = iter([0.0, 30.0])
+    clock = _StepClock([0.0, 30.0])
     adb_path = fake_adb(tmp_path)
     kwargs.setdefault("adb_path", adb_path)
     kwargs.setdefault("serial", "749622c9")
     kwargs.setdefault("runs_dir", tmp_path / "runs")
     kwargs.setdefault("backend", backend)
-    kwargs.setdefault("clock", lambda: next(clocks))
+    kwargs.setdefault("clock", clock)
     kwargs.setdefault("sleep", lambda seconds: None)
     kwargs.setdefault("store", PerfStore(tmp_path / "data" / "mobile_perf.db"))
     kwargs.setdefault("gate", FileLockGate(tmp_path / "gate-leases"))

@@ -277,6 +277,75 @@ def test_poller_rejects_non_positive_interval():
         )
 
 
+class _TickClock:
+    """按预置序列返回读数的宿主时钟（每次调用消费一个值）。"""
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def __call__(self):
+        return self._values.pop(0)
+
+
+def test_estimate_clock_offset_takes_the_minimum_candidate():
+    """偏移取各轮候选的最小值：最新帧只会比此刻更旧，故候选都偏大。
+
+    真机语义：候选（hostMid - maxFrame）在空闲轮会虚高，渲染密集轮最接近真值。
+    """
+    anchors = [
+        {"hostMidS": 100.1, "maxFrameS": 50.1, "callS": 0.2},  # 候选 50.0（最优）
+        {"hostMidS": 102.2, "maxFrameS": 50.1, "callS": 0.4},  # 候选 52.1（空闲轮）
+        {"hostMidS": 101.6, "maxFrameS": 50.1, "callS": 0.6},  # 候选 51.5
+    ]
+
+    offset = frameinfo.estimate_clock_offset(anchors)
+
+    assert offset["offsetS"] == pytest.approx(50.0)
+    assert offset["anchors"] == 3
+    assert offset["spreadMs"] == pytest.approx(2100.0)  # 极差只说明窗口多空闲
+    # 可信度取**选中那一轮**的半个往返，不是所有轮的最小值
+    assert offset["precisionMs"] == pytest.approx(100.0)
+    assert offset["source"] == "frame_anchor"
+
+
+def test_estimate_clock_offset_without_anchors_is_none():
+    """一帧都没读到就没有锚点：返回 None，让调用方如实降级而不是硬算。"""
+    assert frameinfo.estimate_clock_offset([]) is None
+
+
+def test_poller_anchors_each_round_to_its_latest_frame():
+    """每轮把宿主时钟中点与该轮最新帧时刻配对；重复帧照样能当锚点。
+
+    设备时刻 50.0/50.1 s，宿主读数 100.0~102.4 s → 偏移应≈50 s（取最小值），
+    而不是把重复帧丢掉的轮次算成"没有帧"。
+    """
+    payload = _wrap(
+        [
+            _row("1", 49_990_000_000, 50_000_000_000),
+            _row("2", 50_090_000_000, 50_100_000_000),
+        ]
+    )
+    device = _FakeDevice([_FakeOutput(payload), _FakeOutput(payload)])
+    poller = frameinfo.FramePoller(
+        adb_path="adb",
+        serial="s1",
+        target="com.example",
+        interval_s=0.01,
+        call_device=device,
+        sleep=lambda _s: None,
+        elapsed=_TickClock([100.0, 100.2, 102.0, 102.4]),
+    )
+
+    poller._round()
+    poller._round()
+    result = poller.stop()
+
+    assert result.offset["offsetS"] == pytest.approx(50.0)
+    assert result.offset["anchors"] == 2  # 第二轮读到的仍是同一帧，锚点照样成立
+    assert result.offset["precisionMs"] == pytest.approx(100.0)  # 200 ms 往返的一半
+    assert len(result.samples) == 2  # 样本按 vsync id 去重，不重复计数
+
+
 def test_real_fixture_refresh_rate_is_plausible_not_zero():
     """真机表头把 FrameInterval 与 FrameStartTime 写反，按表头取值会得到时间戳。
 

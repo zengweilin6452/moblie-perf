@@ -281,7 +281,12 @@ class CollectScope:
         # 逐帧采集（ticket 15）：reset 清零窗口后按间隔增量读 framestats，
         # 独立线程、不持 gate 设备权；失败如实降级为事件，不阻断采集闭环
         self._frame_poller = kit._start_frame_poll(
-            self._frame_poll, self._frame_interval_s, self.target
+            self._frame_poll,
+            self._frame_interval_s,
+            self.target,
+            # 与页面打标同一条时间轴（会话相对秒）：锚点的宿主侧若不是这个
+            # 口径，换算出来的帧时刻就落在另一个时间原点，整页耗时会整段偏
+            elapsed=self._session.elapsed_s,
         )
         self._watcher = kit._start_crash_watch(self.target, self._watch_warnings)
         kit._guard_foreground(self, phase="after_start")
@@ -436,19 +441,14 @@ class CollectScope:
                     self._artifacts_dir / "frames_gfxinfo.csv", frame_result.samples
                 )
         # 整页加载耗时（ticket 19）：页面打标 + 帧完成时刻 → 末帧稳定口径。
-        # 帧时刻在设备时钟域（CLOCK_MONOTONIC），用一次括号式 uptime 测量换算到
-        # 会话时间轴；测不到偏移就不换算，如实 not_tested（不拿错位的时刻硬算）
+        # 帧时刻在设备单调时钟域（CLOCK_MONOTONIC），偏移由逐帧轮询自身的锚点
+        # 估计（frameinfo.estimate_clock_offset）；没有帧锚点就不换算，如实
+        # not_tested（不拿错位的时刻硬算）
         page_results: list[pageflow_module.PageLoad] = []
         page_meta: dict[str, Any] | None = None
         page_marks = self._session.page_marks()
         if page_marks:
-            offset = (
-                frameinfo_module.measure_clock_offset(
-                    kit._channel, kit.serial, elapsed=self._session.elapsed_s
-                )
-                if frame_result is not None
-                else None
-            )
+            offset = frame_result.offset if frame_result is not None else None
             observed_until_s = self._session.elapsed_s()
             if (
                 offset is not None
@@ -475,11 +475,14 @@ class CollectScope:
                 # 时钟换算的可信度必须写出来：没换算 ≠ 没页面
                 "clockOffsetS": None if offset is None else round(offset["offsetS"], 6),
                 "clockOffsetSource": (
-                    "uptime_bracket"
+                    "frame_anchor"
                     if offset is not None
-                    else ("no_frame_poll" if frame_result is None else "no_uptime_offset")
+                    else ("no_frame_poll" if frame_result is None else "no_frames_anchor")
                 ),
-                "clockRttMs": None if offset is None else offset["rttMs"],
+                "clockAnchorCount": None if offset is None else offset["anchors"],
+                "clockSpreadMs": None if offset is None else offset["spreadMs"],
+                # 可信度：半个 adb 往返，整页耗时上的常数偏置不超过它
+                "clockPrecisionMs": None if offset is None else offset["precisionMs"],
                 "pages": [result.as_dict() for result in page_results],
             }
             if page_results:
@@ -594,7 +597,7 @@ class CollectScope:
                     netprof_module.TRUST_HINT
                 )
 
-        # 整页耗时不可用（未打页面 / 未开逐帧 / 无 uptime 锚点 / 全部页面超时）时
+        # 整页耗时不可用（未打页面 / 未开逐帧 / 无帧锚点 / 全部页面超时）时
         # 如实 not_tested：写明是哪一页、哪种原因，不用空值让人以为"没测"
         if page_meta is not None:
             if not page_aggregates:
@@ -730,7 +733,7 @@ class CollectScope:
                 kind="page_load",
                 detail={**result.as_dict(), "quietGapMs": pageflow_module.QUIET_GAP_MS},
             )
-        # 打了页面标却算不出结论（没开逐帧 / 取不到 uptime 锚点）：如实记降级，
+        # 打了页面标却算不出结论（没开逐帧 / 取不到帧锚点）：如实记降级，
         # 否则报告里只会看到"没有 page_load_ms"，看不出是漏测还是不可判定
         if page_meta is not None and not page_results:
             store.record_event(
@@ -738,7 +741,7 @@ class CollectScope:
                 kind="page_load_degraded",
                 detail={
                     "reason": page_meta.get("clockOffsetSource"),
-                    "clockRttMs": page_meta.get("clockRttMs"),
+                    "clockAnchorCount": page_meta.get("clockAnchorCount"),
                     "pages": [mark.label for mark in page_marks],
                 },
             )
@@ -1314,14 +1317,18 @@ class PerfKit:
         return profiler
 
     def _start_frame_poll(
-        self, enabled: bool, interval_s: float, target: str
+        self,
+        enabled: bool,
+        interval_s: float,
+        target: str,
+        elapsed: Callable[[], float] | None = None,
     ) -> frameinfo_module.FramePoller | None:
         """构造并启动逐帧轮询器（紧随 session.start，窗口与采集窗口对齐）。
 
         与补采轮询同构：独立线程、单次 adb 短事务、不持 gate 设备权。
         reset 失败只记录（窗口起点不可信），轮询照常，结论随 meta 如实标注。
-        帧时刻的设备时钟换算不在这里做——那要在会话末尾测一次偏移
-        （``frameinfo.measure_clock_offset``），见 finalize 的整页耗时段。
+        帧时刻的设备时钟换算不在这里做——轮询器自己记录锚点，stop() 时给出
+        偏移估计（``frameinfo.estimate_clock_offset``），见 finalize 的整页耗时段。
         """
         if not enabled:
             return None
@@ -1331,6 +1338,7 @@ class PerfKit:
             target=target,
             interval_s=interval_s,
             call_device=self._channel,
+            elapsed=elapsed or self._clock,
         )
         poller.start()
         return poller

@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pages", default=None,
                    help="逗号分隔页面名（工单 19）：滑动序列中逐个 mark_page，"
                         "计整页加载耗时；需 --frame-poll")
+    p.add_argument("--allow-degraded", action="store_true",
+                   help="巡检 ok=False 时仍继续（如 SoloPi 端内 adb 权限未开这类"
+                        "只影响部分能力的项），降级项照常写进报告")
     return p.parse_args()
 
 
@@ -86,19 +89,23 @@ def main() -> int:
     print(f"  ok={readiness.ok} degraded={readiness.degraded_items} "
           f"clock_offset={readiness.clock_offset_s}s")
     if readiness.ok is False:
-        print("设备未就绪，中止", file=sys.stderr)
-        return 2
+        if not args.allow_degraded:
+            print("设备未就绪，中止（确需继续可加 --allow-degraded）", file=sys.stderr)
+            return 2
+        print(f"  巡检未通过（{readiness.degraded_items}），按 --allow-degraded 继续")
 
     pages = [name for name in (args.pages or "").split(",") if name]
 
     def drive(phase: str, session) -> None:
         for i in range(args.swipes):
             sh("shell", "input", "swipe", "540", "1600", "540", "400", "600")
+            # 页面打标必须紧跟触发翻页的那一下：放在 sleep 之后会把"上一页已经
+            # 加载完"当成起点，整页耗时算的是下一页的动画而不是本页的加载
+            if i < len(pages):
+                session.mark_page(pages[i])
             time.sleep(args.swipe_gap)
             if i == args.swipes // 2 - 1:
                 session.mark(f"{phase}_half")
-            if i < len(pages):
-                session.mark_page(pages[i])
 
     def launch() -> None:
         sh("shell", "am", "force-stop", args.package)

@@ -10,19 +10,20 @@
 
 本模块只做**纯计算**：输入必须已换算到**同一时间轴**（会话相对秒）——页面起点、
 帧完成时刻、观测结束时刻。设备时钟域（``CLOCK_MONOTONIC`` 纳秒）到会话时间轴
-的换算由 ``frameinfo.measure_clock_offset`` 做（需要一次 adb 实测），不是纯函数
-能做的事。
+的换算由 ``frameinfo.estimate_clock_offset`` 做（用逐帧轮询自身的锚点估计，
+不需要额外时钟源），不是纯函数能做的事。
 
 **已知局限（如实保留，不猜）**：
 
 - 无限轮播/持续动画页面永不静默 → ``timeout``（not_tested），不硬给一个数；
 - "稳定"是**视觉稳定**，不保证懒加载数据已就绪（图片可能在稳定后才到）；
 - 首帧前的空白期计入耗时——这是用户感知等待的真实组成，不该被剪掉；
-- 帧时刻与会话时间轴的对齐精度受 adb 往返延迟限制（数十毫秒量级），
+- 帧时刻与会话时间轴的对齐精度受帧间隔与 adb 往返限制（数十毫秒量级），
   故本指标用于**跨档位/跨版本的相对比较**，不宜当作毫秒级绝对值；
-- 帧完成时刻是 ``CLOCK_MONOTONIC``，设备 ``/proc/uptime`` 是 ``CLOCK_BOOTTIME``，
-  二者差累计休眠时间。交互式会话屏幕常亮、无休眠，故以 uptime 换算；若会话中
-  设备休眠过，本指标会整体偏移。
+- 换算用帧锚点法（``frameinfo.estimate_clock_offset``）而**不是** ``/proc/uptime``：
+  后者是 ``CLOCK_BOOTTIME``（含休眠），与帧时刻的 ``CLOCK_MONOTONIC`` 差累计
+  休眠时间——真机实测休眠 3.3 天时两者差 285734 s，整页耗时会被全部误判为
+  "没有帧"。帧锚点法只依赖帧流自身，不受休眠影响。
 """
 
 from __future__ import annotations
@@ -199,8 +200,8 @@ def not_tested_reason(
     """整页耗时不可用时的如实原因（含可执行下一步）。
 
     ``page_count`` 为宿主实际打标的页面数——必须与 ``results`` 分开传：
-    打了标却算不出结论（没开逐帧 / 取不到 uptime 偏移）时 ``results`` 为空，
-    但"没打标"和"打了标算不出"是两种完全不同的排查方向。
+    打了标却算不出结论（没开逐帧 / 逐帧窗口内没有帧时刻可当锚点）时
+    ``results`` 为空，但"没打标"和"打了标算不出"是两种完全不同的排查方向。
     多页面时把每页的原因拼起来——只报第一条会把"另一页是无限动画"藏起来。
     """
     count = len(results) if page_count is None else page_count
@@ -210,8 +211,9 @@ def not_tested_reason(
         return "未开启逐帧采集（--frame-poll），没有帧完成时刻，整页加载耗时不可得"
     if not results:
         return (
-            "已打页面标但取不到设备 uptime 偏移，帧时刻无法换算到会话时间轴，"
-            "本 run 不硬算（检查 /proc/uptime 是否可读）"
+            "已打页面标但逐帧窗口内没有读到任何帧完成时刻，没有锚点可把设备时钟"
+            "换算到会话时间轴，本 run 不硬算（确认被测 App 在窗口内有渲染，"
+            "且 gfxinfo framestats 可读）"
         )
     details = "; ".join(
         f"{result.page}（{result.status}: {result.reason}）" for result in results
