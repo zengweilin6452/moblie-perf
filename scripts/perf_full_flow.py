@@ -122,6 +122,10 @@ def main() -> int:
     print("== 3. 第一轮采集（建立基线，无弱网对照）")
     with kit.collect(spec, host_run_id=f"{baseline}-run1-{stamp}",
                      start_mode=args.start_mode, frame_poll=args.frame_poll) as s:
+        # 冷启动必须发生在采集窗口**内**：窗口外起 App，首屏请求在代理施加前
+        # 就发完了，弱网档那一轮代理侧会一条连接都看不到，档位等于没生效
+        # （真机实测：窗口外冷启动 0 连接，窗口内冷启动 24 个 CONNECT）
+        launch()
         s.mark("run1_start")
         drive("run1", s)
         s.mark("run1_end")
@@ -135,7 +139,6 @@ def main() -> int:
     print("== 5. 第二轮采集（"
           + (f"弱网档 {args.net_profile}" if args.net_profile else "同口径复测")
           + "）")
-    launch()
     collect_kwargs = dict(start_mode=args.start_mode, frame_poll=args.frame_poll)
     if args.net_profile:
         collect_kwargs.update(
@@ -144,6 +147,7 @@ def main() -> int:
             net_mitmdump=args.net_mitmdump,
         )
     with kit.collect(spec, host_run_id=f"{baseline}-run2-{stamp}", **collect_kwargs) as s:
+        launch()  # 与第一轮同口径：窗口内冷启动（此处代理已施加，首屏请求才会被整形）
         s.mark("run2_start")
         drive("run2", s)
         s.mark("run2_end")

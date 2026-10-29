@@ -6,10 +6,12 @@
 ③ 异常路径后设备代理与 reverse 必被恢复，doctor 能发现并复验残留。
 """
 
+import functools
 import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1119,14 +1121,27 @@ def test_delay_for_adds_latency_bandwidth_and_loss_stall():
     assert lossy[0] == pytest.approx(0.3)  # 100ms + 2× 重传停顿
 
 
+@functools.lru_cache(maxsize=1)
 def _addon_python() -> str | None:
-    """mitmdump 同目录的解释器（addon 只能跑在 ≥3.12 的那个环境里）。"""
+    """能 ``import mitmproxy`` 的解释器（addon 只在这个环境里跑得起来）。
+
+    先找 mitmdump 同目录——那只对独立 venv 成立；``pip --user`` 装的 mitmdump
+    落在用户脚本目录，解释器在别处，但它自己就能 import mitmproxy（用户 site
+    在 sys.path 上）。所以候选里补上当前解释器，并用一次 import 探测确认，
+    探不通才判为不可用（跳过），不把"环境不满足"伪装成测试失败。
+    """
     if MITMDUMP is None:
         return None
     base = Path(MITMDUMP).resolve().parent
-    for name in ("python.exe", "python3.exe", "python", "python3"):
-        candidate = base / name
-        if candidate.is_file():
+    candidates = [base / name for name in ("python.exe", "python3.exe", "python", "python3")]
+    candidates.append(Path(sys.executable))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        probe = subprocess.run(
+            [str(candidate), "-c", "import mitmproxy"], capture_output=True, timeout=60
+        )
+        if probe.returncode == 0:
             return str(candidate)
     return None
 
