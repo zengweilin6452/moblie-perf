@@ -360,3 +360,15 @@ mobile_perf
 4. 弱网会话结束后设备代理必被恢复（含异常退出路径，`netprof doctor` 可查残留）；
 5. 跨网络档位的 trend 默认拒绝、显式覆盖可查并标记口径不一致；
 6. 新增指标全部经指标字典入库，unit/contract 覆盖解析与降级分支；真机项走 `-m device` 门控。
+
+**实施收口（2026-10-29，真机 749622c9 / 2206123SC-Android14）**：
+
+- 1/2/4/5 已通过：`weak` 档 `effective=true`，23 个 CONNECT 到 `d-lms-sg-uat.byd.com`
+  与阿里云 OSS，`net_conn_duration_ms` 中位 667 ms（对上 400 ms 延迟 + 400 kbps）；
+  整页耗时与逐帧、GPU 双指标同时有值，门禁与跨档趋势按设计工作。
+- 验收过程中修正两条**口径前提**（已写入嵌入指南 §3.2）：
+  1. 要测首屏，App 必须在**采集窗口内**冷启动——窗口外起 App，首屏请求在代理
+     施加前已直连发完，代理侧 0 连接，`applied=true` 但 `effective=false`；
+  2. 代理**只整形 CONNECT 隧道**，明文 HTTP 不在 addon 范围。
+- 3 仍缺：本机 `targetSdk 36` 的 App 不信任用户 CA，接口级指标走的是
+  `not_tested` 降级路径（已验收该路径），有值路径待满足前置条件的组合。

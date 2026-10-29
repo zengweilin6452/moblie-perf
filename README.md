@@ -11,7 +11,7 @@
 - **门禁**：judge 纯函数三态结论（pass / fail / not_tested），阈值由宿主显式传入（不入库），基线绑定设备档案与网络档位严格匹配；
 - **补采**：PC 侧 dumpsys 轮询电池温度与 GPU 双源利用率/显存（视机型能力如实降级），与 SoloPi 指标、事件三源同时间轴同图；
 - **逐帧与整页**：gfxinfo framestats 逐帧 P50/P90/P99（工单 15）、页面打标到画面视觉稳定的整页加载耗时 `page_load_ms`（工单 19）；
-- **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；
+- **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；代理只整形 CONNECT 隧道（明文 HTTP 不在范围），要测首屏须在采集窗口内冷启动 App——窗口外起 App 首屏请求已直连发完，档位等于没生效；
 - **报告**：每 run 双产物——单文件 HTML（内嵌离线 ECharts，断网可看）+ 同内容 JSON；
 - **设备准入**：DeviceGate 短事务协议，与宿主 UI 自动化的整生命周期租约互不阻塞（录制期间不持锁）。
 
@@ -23,6 +23,13 @@ pip install -e .
 ```
 
 ADB 三级解析：显式参数 > `MOBILE_PERF_ADB`/`ADB` 环境变量 > 随包 `SoloPi/platform-tools`（37.0.1）。
+
+**弱网档可选依赖**：mitmproxy（需 Python ≥3.12）。组件按「显式参数 → `MOBILE_PERF_MITMDUMP` → PATH 上的 `mitmdump`」查找；没装时连接级与接口级指标如实 `not_tested` 并给安装提示，其余采集照常。
+
+```bash
+pip install --user mitmproxy        # Windows 装系统 site 可能因 brotli 文件占用失败
+export MOBILE_PERF_MITMDUMP=~/.local/bin/mitmdump   # 不在 PATH 时用它指路
+```
 
 ## 快速开始
 
