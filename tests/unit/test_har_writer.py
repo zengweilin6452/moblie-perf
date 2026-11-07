@@ -239,7 +239,13 @@ def test_compose_skips_bad_lines_and_writes_valid_har(tmp_path):
     har_path = tmp_path / "app.har"
     entry = {"time": 1.0, "request": {}, "response": {}, "timings": {}}
     entries_path.write_text(
-        "not json\n" + json.dumps(entry) + "\n" + json.dumps(["not", "dict"]) + "\n",
+        "not json\n"
+        + json.dumps(entry)
+        + "\n"
+        + json.dumps(["not", "dict"])
+        + "\n"
+        + json.dumps({"a": 1})
+        + "\n",
         encoding="utf-8",
     )
 
@@ -255,7 +261,7 @@ def test_compose_skips_bad_lines_and_writes_valid_har(tmp_path):
     assert payload["log"]["pages"] == []
     assert payload["log"]["entries"] == [entry]
     assert summary.entries == 1
-    assert summary.skipped_entries == 2
+    assert summary.skipped_entries == 3  # 坏 JSON / 非 dict / 合法 JSON 但非 entry
     assert summary.status == "complete"
     assert summary.size_bytes == har_path.stat().st_size
     assert not (tmp_path / "app.har.tmp").exists()
