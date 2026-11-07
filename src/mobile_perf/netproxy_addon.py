@@ -136,14 +136,15 @@ def _init_har() -> None:
             redact=bool(config.get("redact", True)),
             max_hash_bytes=int(config.get("maxHashBytes") or 8 * 1024 * 1024),
         )
-        dropped_reasons: set[str] = set()
+        dropped = {"count": 0}
 
         def on_drop(reason: str) -> None:
-            # 达到上限后可能持续丢包；只把首个原因写入唯一生效证据日志，
-            # 避免重流量下把 net_proxy.jsonl 灌爆。
-            if reason not in dropped_reasons:
-                dropped_reasons.add(reason)
-                _emit("har_dropped", reason=reason, truncated=True)
+            # 达到上限后可能持续丢包。只记首个原因，并每 100 条附带一次累计数：
+            # 既不让重流量灌爆唯一生效证据日志，也让 compose 侧能还原量级。
+            dropped["count"] += 1
+            count = dropped["count"]
+            if count == 1 or count % 100 == 0:
+                _emit("har_dropped", reason=reason, dropped=count, truncated=True)
 
         writer = module.HarWriter(
             entries,

@@ -470,7 +470,23 @@ def test_addon_drop_event_flood_is_throttled(tmp_path, monkeypatch):
     drops = [event for event in events if event["ev"] == "har_dropped"]
     assert len(drops) == 1
     assert drops[0]["reason"] == "max_entries"
+    assert drops[0]["dropped"] == 1
     assert len(entries.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_har_drop_stats_use_cumulative_count_when_present(tmp_path):
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "har_dropped", "reason": "max_entries", "dropped": 1},
+            {"ev": "har_dropped", "reason": "max_entries", "dropped": 100},
+        ],
+    )
+
+    stats = netprof.read_har_log_stats(tmp_path / netprof.LOG_FILENAME)
+
+    assert stats["dropped"] == 100
+    assert stats["reason"] == "max_entries"
 
 
 def test_init_error_is_reported_as_failed_not_zero_requests(tmp_path):

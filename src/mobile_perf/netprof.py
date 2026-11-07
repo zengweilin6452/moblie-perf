@@ -551,7 +551,13 @@ def read_har_log_stats(path: str | os.PathLike[str] | None) -> dict[str, Any]:
                 if not isinstance(record, dict):
                     continue
                 if record.get("ev") == "har_dropped":
-                    stats["dropped"] += 1
+                    # 新事件带累计数 dropped（1,100,200...）；旧格式没有该字段时
+                    # 退化为按事件条数计数，两种日志都能如实还原。
+                    reported = record.get("dropped")
+                    if isinstance(reported, int) and not isinstance(reported, bool):
+                        stats["dropped"] = max(stats["dropped"], reported)
+                    else:
+                        stats["dropped"] += 1
                     if stats["reason"] is None:
                         stats["reason"] = record.get("reason")
                 elif record.get("ev") == "har_error":
