@@ -23,6 +23,7 @@ from . import startup as startup_module
 from . import supplement as supplement_module
 from .adb import default_repo_root, resolve_adb
 from .gate import DeviceGate, FileLockGate
+from .har_writer import CaptureOptions
 from .judge import JudgeSpec, Verdict
 from .judge import judge as _judge_report
 from .keeper import (
@@ -44,6 +45,16 @@ DEFAULT_KEEP_DAYS = 30.0
 
 # collect() kwargs 的未传哨兵：与 SessionSpec 字段区分"显式覆盖"与"沿用 spec/默认"
 _UNSET: Any = object()
+
+
+def _resolve_capture_options(
+    capture_har: bool, capture_options: CaptureOptions | None
+) -> CaptureOptions:
+    """合并开关与细项选项；任意一个开启即生效，默认返回关闭态。"""
+    options = capture_options if capture_options is not None else CaptureOptions()
+    if capture_har and not options.enabled:
+        options = dataclasses.replace(options, enabled=True)
+    return options if options.enabled else CaptureOptions()
 
 
 class CollectError(RuntimeError):
@@ -190,6 +201,7 @@ class CollectScope:
         net_tier: str = netprof_module.TIER_PASSTHROUGH,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
+        capture: CaptureOptions | None = None,
     ):
         self._kit = kit
         self.target = target
@@ -203,6 +215,10 @@ class CollectScope:
         self._net_tier = net_tier
         self._net_mitmdump = net_mitmdump
         self._net_port = net_port
+        self._capture = capture if capture is not None else CaptureOptions()
+        # 抓包与弱网正交：没有显式档位时仅内部用 none+decrypt 起代理，
+        # sessions.net_profile 仍写 None，报告用 captureOnly 标注
+        self._capture_only = False
         self._net_profiler: netprof_module.NetProfiler | None = None
         self._start_mode = start_mode
         self._jank_thresholds_ms = (
@@ -251,7 +267,9 @@ class CollectScope:
         if kit.foreground_restore:
             self.foreground_before = kit._read_foreground_state()
         # 网络剖面（ticket 17）：在采集窗口开始前施加，代理不可用/端口占用等
-        # 情况不抛错——如实降级，由 finalize 落 not_tested 原因与事件
+        # 情况不抛错——如实降级，由 finalize 落 not_tested 原因与事件。
+        # APP 抓包（正交）：即使没有弱网档位也要起代理，内部用 none+decrypt，
+        # 但不写 sessions.net_profile、报告用 captureOnly 标注。
         if self._net_profile is not None:
             self._net_profiler = kit._start_net_profile(
                 self._net_profile,
@@ -259,6 +277,17 @@ class CollectScope:
                 self._net_mitmdump,
                 self._net_port,
                 self._net_tier,
+                self._capture,
+            )
+        elif self._capture.enabled:
+            self._capture_only = True
+            self._net_profiler = kit._start_net_profile(
+                netprof_module.build_profile("none"),
+                self._run_dir,
+                self._net_mitmdump,
+                self._net_port,
+                netprof_module.TIER_DECRYPT,
+                self._capture,
             )
         self._session = CollectSession(
             target=self.target,
@@ -500,6 +529,10 @@ class CollectScope:
         api_breakdown: dict[str, Any] | None = None
         if net_session is not None:
             net_meta = net_session.as_dict()
+            if self._capture_only:
+                # 不伪称用户选择了弱网档位：profile 留空，只标 captureOnly
+                net_meta["profile"] = None
+                net_meta["captureOnly"] = True
             if net_session.effective:
                 net_aggregates = netprof_module.conn_duration_rows(net_session.log_summary)
                 net_meta["connSamples"] = len(net_session.log_summary.conn_durations_ms)
@@ -678,8 +711,13 @@ class CollectScope:
                 "serial": kit.serial,
                 "device_profile": kit.device_profile,
                 # 网络档位（工单 20）：本 run 用了哪个档位（名+参数），与是否
-                # 生效无关——"跑了但没生效"也是该档位下的 run
-                "net_profile": net_session.profile if net_session is not None else None,
+                # 生效无关——"跑了但没生效"也是该档位下的 run。仅抓包时
+                # （captureOnly）不写档位，保持趋势/基线的可比性维度不变
+                "net_profile": (
+                    None
+                    if net_session is None or self._capture_only
+                    else net_session.profile
+                ),
                 "target": self.target,
                 "items": self.items,
                 "started_at": record.started_at,
@@ -691,7 +729,11 @@ class CollectScope:
             }
         )
         store.record_metrics(self._run_id, merged_aggregates)
-        store.record_run_artifacts(self._run_id, [str(self._artifacts_dir), str(self._run_dir)])
+        run_artifacts = [str(self._artifacts_dir), str(self._run_dir)]
+        har_detail = (net_meta or {}).get("har") or {}
+        if har_detail.get("path"):
+            run_artifacts.append(str(har_detail["path"]))
+        store.record_run_artifacts(self._run_id, run_artifacts)
         for degraded in supplement_info.get("degraded", []):
             detail = {
                 "key": degraded["key"],
@@ -778,6 +820,14 @@ class CollectScope:
                     "apiSamples": net_meta.get("apiSamples", 0),
                 },
             )
+        # APP 抓包事件（仅显式开启时）：HAR 摘要随事件入库，便于不翻 meta 就能
+        # 看出状态、条目数与降级原因；默认关闭时零新增事件
+        if self._capture.enabled and net_meta is not None:
+            har_detail = net_meta.get("har")
+            if har_detail is not None:
+                store.record_event(
+                    self._run_id, kind="capture_har", detail=dict(har_detail)
+                )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
         for event in watch_events:
             store.record_event(
@@ -1297,14 +1347,18 @@ class PerfKit:
         mitmdump: str | None,
         port: int,
         tier: str = netprof_module.TIER_PASSTHROUGH,
+        capture: CaptureOptions | None = None,
     ) -> netprof_module.NetProfiler:
         """施加网络剖面（采集窗口之前）：代理 → reverse → 系统代理。
 
         失败不抛错：``NetSession`` 里带着原因，finalize 据此把
         ``net_conn_duration_ms`` 标 not_tested 并落事件。代理日志与 stdout
         落在 run 目录下（artifacts 之外），便于事后核查代理是否真的看到流量。
-        ``tier=decrypt`` 时额外产出接口级指标（工单 18）。
+        ``tier=decrypt`` 时额外产出接口级指标（工单 18）；``capture`` 显式
+        开启时再注入 HAR 配置并产出 ``network/app.har``。
         """
+        if capture is not None and not capture.enabled:
+            capture = None
         profiler = netprof_module.NetProfiler(
             adb_path=str(self.adb_path),
             serial=self.serial,
@@ -1312,6 +1366,7 @@ class PerfKit:
             port=port,
             tier=tier,
             call_device=self._channel,
+            capture=capture,
         )
         profiler.start(profile, work_dir=run_dir / "network")
         return profiler
@@ -1484,9 +1539,11 @@ class PerfKit:
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
         net_profile: str | netprof_module.NetProfile | None = None,
         net_overrides: dict[str, float] | None = None,
-        net_tier: str = netprof_module.TIER_PASSTHROUGH,
+        net_tier: str | None = None,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
+        capture_har: bool = False,
+        capture_options: CaptureOptions | None = None,
     ) -> CollectScope:
         """打开交互式采集窗口（设计方案 §6.2）：with 块内 UI 驱动 + mark。
 
@@ -1539,6 +1596,19 @@ class PerfKit:
             if isinstance(net_profile, netprof_module.NetProfile) or net_profile is None
             else netprof_module.build_profile(net_profile, net_overrides)
         )
+        resolved_capture = _resolve_capture_options(capture_har, capture_options)
+        if net_tier is None:
+            # 未显式指定：抓包需要解密，否则沿用既有直通默认
+            net_tier = (
+                netprof_module.TIER_DECRYPT
+                if resolved_capture.enabled
+                else netprof_module.TIER_PASSTHROUGH
+            )
+        if resolved_capture.enabled and net_tier != netprof_module.TIER_DECRYPT:
+            raise ValueError(
+                "APP 抓包需要解密档：请显式传 net_tier='decrypt'"
+                "（不会自动改显式档位）"
+            )
         return CollectScope(
             self,
             target=target,
@@ -1555,6 +1625,7 @@ class PerfKit:
             net_tier=net_tier,
             net_mitmdump=net_mitmdump,
             net_port=net_port,
+            capture=resolved_capture,
         )
 
     def run_collect(
@@ -1573,9 +1644,11 @@ class PerfKit:
         frame_interval_s: float = frameinfo_module.DEFAULT_INTERVAL_S,
         net_profile: str | netprof_module.NetProfile | None = None,
         net_overrides: dict[str, float] | None = None,
-        net_tier: str = netprof_module.TIER_PASSTHROUGH,
+        net_tier: str | None = None,
         net_mitmdump: str | None = None,
         net_port: int = netprof_module.DEFAULT_PORT,
+        capture_har: bool = False,
+        capture_options: CaptureOptions | None = None,
     ) -> dict[str, Any]:
         """一次完整采集闭环：巡检 → 启动 → 计时 → 停止 → pull → 校验 → 落盘 → 入库。
 
@@ -1613,6 +1686,8 @@ class PerfKit:
             net_tier=net_tier,
             net_mitmdump=net_mitmdump,
             net_port=net_port,
+            capture_har=capture_har,
+            capture_options=capture_options,
         ) as scope:
             self._sleep(duration_s)
         # with 退出已无条件 finalize（幂等），直接用 scope.report，避免双收口

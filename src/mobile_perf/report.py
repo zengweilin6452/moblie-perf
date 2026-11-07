@@ -940,6 +940,10 @@ def _network_markup(report: dict[str, Any]) -> str:
         f"<tr><td>{html_escape(name)}</td><td>{html_escape(str(value))}</td></tr>"
         for name, value in rows
     )
+    # APP 抓包（HAR）摘要：只在 network.har 存在时追加；旧 run 无此键时
+    # 输出与现版本逐字节一致。链接给相对 run 目录的 network/app.har，
+    # 报告 JSON/HTML 均不内嵌 HAR 正文或任何敏感值。
+    body += _har_rows_html(network.get("har"))
     tier_note = (
         "解密档 / decrypt：解 TLS 后同时产出连接级与接口级指标；接口级只在"
         "信任探测成功时可用，否则如实 not_tested（不重试、不猜）。"
@@ -954,6 +958,72 @@ def _network_markup(report: dict[str, Any]) -> str:
         "生效判定<strong>只看代理侧日志</strong>——被测 App 有本地"
         "缓存与多域名兜底，页面能打开<strong>不</strong>代表代理生效。</p>"
     )
+
+
+_HAR_STATUS_TEXT = {
+    "not_enabled": "未开启 / not enabled",
+    "not_tested": "未取得可用产物 / not tested",
+    "complete": "完整 / complete",
+    "partial": "部分 / partial（仅明文 HTTP）",
+    "failed": "失败 / failed",
+}
+
+
+def _har_rows_html(har: Any) -> str:
+    """HAR 摘要行（仅 network.har 存在时调用）；危险/降级必须显著标注。"""
+    if not isinstance(har, dict):
+        return ""
+    status = str(har.get("status") or "")
+    artifact = (
+        '<a href="network/app.har">network/app.har</a>'
+        if har.get("entries") and har.get("path")
+        else "无（未创建空 HAR）"
+    )
+    rows: list[tuple[str, str]] = [
+        (
+            "HAR / HAR",
+            "⚠️ " + _HAR_STATUS_TEXT["failed"]
+            if status == "failed"
+            else _HAR_STATUS_TEXT.get(status, status),
+        ),
+        ("HAR 条目 / HAR entries", str(har.get("entries", 0))),
+        ("HAR 产物 / HAR artifact", artifact),
+        (
+            "正文 / Bodies",
+            (
+                "完整正文 / full（按单条上限截断）"
+                if har.get("bodyMode") == "full"
+                else "仅元数据 / metadata（size + sha256）"
+            ),
+        ),
+        (
+            "脱敏 / Redacted",
+            "是 / yes"
+            if har.get("redacted")
+            else "⚠️ 否 / no（危险：HAR 含敏感原值，勿外传）",
+        ),
+        (
+            "截断 / Truncated",
+            (
+                f"是 / yes（{har.get('truncatedReason') or '限额'}）"
+                if har.get("truncated")
+                else "否 / no"
+            ),
+        ),
+        (
+            "HTTPS 覆盖 / HTTPS coverage",
+            "完整 / full"
+            if har.get("httpsCoverage") == "full"
+            else "无（仅明文 HTTP）/ none",
+        ),
+    ]
+    if har.get("notTestedReason"):
+        rows.append(("HAR 不可用原因 / HAR unavailable", str(har["notTestedReason"])))
+    rendered = []
+    for name, value in rows:
+        cell = value if name.startswith("HAR 产物") else html_escape(value)
+        rendered.append(f"<tr><td>{html_escape(name)}</td><td>{cell}</td></tr>")
+    return "".join(rendered)
 
 
 def _trust_text(trust: Any) -> str:

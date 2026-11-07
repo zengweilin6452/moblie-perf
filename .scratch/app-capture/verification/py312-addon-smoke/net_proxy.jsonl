@@ -1,0 +1,1 @@
+{"t": 1794035961.086813, "ev": "api_request", "fid": "f1", "host": "127.0.0.1", "method": "GET", "route": "GET /probe", "status": 200, "durationMs": 100.0, "sizeBytes": 11}

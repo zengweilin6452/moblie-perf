@@ -49,6 +49,15 @@ from pathlib import Path
 from typing import Any
 
 from . import metrics as metrics_module
+from .har_writer import (
+    STATUS_COMPLETE,
+    STATUS_FAILED,
+    STATUS_NOT_TESTED,
+    STATUS_PARTIAL,
+    CaptureOptions,
+    HarSummary,
+    compose_har,
+)
 
 # 内置档位预设：延迟(ms) / 下行(kbps) / 上行(kbps) / 丢包(%)
 # 数值见 M6 方案 §6；宿主可用 overrides 覆盖，或走 custom 全量指定
@@ -520,6 +529,47 @@ def read_proxy_log(path: str | os.PathLike[str] | None) -> ProxyLogSummary:
         return ProxyLogSummary()
 
 
+def read_har_log_stats(path: str | os.PathLike[str] | None) -> dict[str, Any]:
+    """从代理日志统计 HAR 写入侧的降级：限额丢弃与写失败。
+
+    addon 进程被 terminate 后其内存计数器不可读，但 ``har_dropped`` /
+    ``har_error`` 事件已逐行落进 ``net_proxy.jsonl``，据此如实还原。
+    """
+    stats: dict[str, Any] = {"dropped": 0, "errors": 0, "reason": None, "initErrors": []}
+    if not path:
+        return stats
+    try:
+        with Path(path).open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if record.get("ev") == "har_dropped":
+                    # 新事件带累计数 dropped（1,100,200...）；旧格式没有该字段时
+                    # 退化为按事件条数计数，两种日志都能如实还原。
+                    reported = record.get("dropped")
+                    if isinstance(reported, int) and not isinstance(reported, bool):
+                        stats["dropped"] = max(stats["dropped"], reported)
+                    else:
+                        stats["dropped"] += 1
+                    if stats["reason"] is None:
+                        stats["reason"] = record.get("reason")
+                elif record.get("ev") == "har_error":
+                    stats["errors"] += 1
+                    message = str(record.get("error") or "")
+                    if message.startswith("init:") and message not in stats["initErrors"]:
+                        stats["initErrors"].append(message)
+    except OSError:
+        pass
+    return stats
+
+
 def conn_duration_rows(summary: ProxyLogSummary) -> list[dict[str, Any]]:
     """连接耗时聚合行（会话级单样本）；没有连接返回空列表，不硬造 0 值。"""
     if not summary.conn_durations_ms:
@@ -554,6 +604,9 @@ class NetSession:
     log_path: str | None = None
     hint: str | None = None
     note: str | None = None
+    # APP 抓包（HAR）摘要：默认关闭时保持 None，as_dict 不出现 har 键，
+    # 旧 run 的报告与网络段形状逐字节不变
+    har: HarSummary | None = None
     started_at: float | None = None
     stopped_at: float | None = None
 
@@ -614,7 +667,7 @@ class NetSession:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "profile": self.profile,
             "tier": self.tier,
             "applied": self.applied,
@@ -637,6 +690,10 @@ class NetSession:
             "restored": dict(self.restored),
             "logPath": self.log_path,
         }
+        # 只有显式开启抓包才出现 har 子块——默认关闭时与旧报告形状完全一致
+        if self.har is not None:
+            payload["har"] = self.har.as_dict()
+        return payload
 
 
 DeviceCaller = Callable[..., Any]  # call_device(args, timeout_s) -> .stdout/.returncode
@@ -665,9 +722,14 @@ class NetProfiler:
         which: Callable[[str], str | None] = shutil.which,
         in_use: Callable[[int], bool] = port_in_use,
         env: dict[str, str] | None = None,
+        capture: CaptureOptions | None = None,
     ):
         if tier not in TIER_NAMES:
             raise ValueError(f"未知弱网档位模式 {tier!r}，可选: {', '.join(TIER_NAMES)}")
+        if capture is not None and capture.enabled and tier != TIER_DECRYPT:
+            raise ValueError(
+                "APP 抓包需要解密档：请显式使用 --net-tier decrypt（不会自动改显式档位）"
+            )
         self.adb_path = adb_path
         self.serial = serial
         self.port = port
@@ -686,6 +748,10 @@ class NetProfiler:
         self._profile: NetProfile | None = None
         self._session = NetSession(tier=tier)
         self._log_path: str | None = None
+        self._capture = capture if capture is not None else CaptureOptions()
+        self._har_path: str | None = None
+        self._har_entries_path: str | None = None
+        self._har_composed = False
 
     # ---- 可用性 ----
 
@@ -716,6 +782,10 @@ class NetProfiler:
         if self._process is not None:
             raise NetProfileError("网络剖面已在运行，不能重复 start")
         self._profile = profile
+        self._har_composed = False
+        self._log_path = None
+        self._har_path = None
+        self._har_entries_path = None
         self._session = NetSession(
             profile=profile.as_dict(),
             tier=self.tier,
@@ -723,6 +793,20 @@ class NetProfiler:
             evidence=EVIDENCE_UNAVAILABLE,
             trust=TRUST_PENDING if self.tier == TIER_DECRYPT else TRUST_UNKNOWN,
         )
+        if self._capture.enabled:
+            # 路径在 start 阶段就确定（含空格/中文也由 Path 与 JSON 环境变量安全承载）
+            work_path = Path(work_dir)
+            work_path.mkdir(parents=True, exist_ok=True)
+            self._har_path = str(work_path / "app.har")
+            self._har_entries_path = str(work_path / "app.har.entries.jsonl")
+            self._session.har = HarSummary(
+                enabled=True,
+                status=STATUS_NOT_TESTED,
+                path=self._har_path,
+                entries_path=self._har_entries_path,
+                body_mode=self._capture.body_mode,
+                redacted=self._capture.redact,
+            )
 
         availability = self.availability()
         if not availability.available:
@@ -739,9 +823,14 @@ class NetProfiler:
                 return self._session
             self._session.setup_errors.append(availability.reason or "mitmproxy 不可用")
             self._session.hint = availability.hint
+            unavailable = availability.reason or "mitmproxy 不可用"
+            if availability.hint:
+                unavailable = f"{unavailable}；{availability.hint}"
+            self._mark_har_not_tested(unavailable)
             return self._session
         if self._in_use(self.port):
             self._session.setup_errors.append(f"端口 {self.port} 已被占用")
+            self._mark_har_not_tested(f"端口 {self.port} 已被占用")
             return self._session
 
         work_path = Path(work_dir)
@@ -751,18 +840,21 @@ class NetProfiler:
             self._spawn_proxy(availability.executable or "mitmdump", work_path)
         except Exception as exc:  # noqa: BLE001 - 起代理失败要如实回滚
             self._session.setup_errors.append(f"代理启动失败: {exc}")
+            self._mark_har_not_tested(f"代理启动失败: {exc}")
             self._stop_proxy()
             return self._session
         self._session.proxy_started = True
 
         if not self._set_reverse(True):
             self._session.setup_errors.append("adb reverse 建立失败")
+            self._mark_har_not_tested("adb reverse 建立失败")
             self._rollback()
             return self._session
         self._session.reverse_set = True
 
         if not self._set_device_proxy(True):
             self._session.setup_errors.append("设备系统代理设置失败")
+            self._mark_har_not_tested("设备系统代理设置失败")
             self._rollback()
             return self._session
         self._session.proxy_set = True
@@ -789,12 +881,101 @@ class NetProfiler:
                 if self._session.tier == TIER_DECRYPT:
                     self._session.trust = self._session.log_summary.trust
                     self._session.trust_error = self._session.log_summary.trust_error
+        # 设备恢复与进程终止之后才合成 HAR：不依赖 mitmproxy 的 done()，
+        # 已 flush 的 JSONL 行不会因 terminate 丢失。stop() 幂等，只合成一次。
+        if self._capture.enabled and not self._har_composed:
+            self._compose_har()
         self._session.stopped_at = self._now()
         self._session.proxy_set = False
         self._session.reverse_set = False
         self._session.proxy_started = False
         self._process = None
         return self._session
+
+    # ---- HAR 合成 ----
+
+    def _mark_har_not_tested(self, reason: str) -> None:
+        if self._session.har is None:
+            return
+        self._session.har.status = STATUS_NOT_TESTED
+        self._session.har.not_tested_reason = reason
+        self._session.har.path = None
+
+    def _har_unavailable_reason(self) -> str:
+        """零条目时的如实原因：优先环境失败，其次证书拒绝，最后零 HTTP 流量。"""
+        if not self._session.applied:
+            reason = (
+                self._session.setup_errors[0]
+                if self._session.setup_errors
+                else "网络剖面未施加"
+            )
+            if self._session.hint:
+                reason = f"{reason}；{self._session.hint}"
+            return reason
+        if self._session.trust == TRUST_REJECTED:
+            return (
+                "HTTPS 未解密：被测 App 不信任代理 CA，且代理侧未观察到明文 HTTP 请求；"
+                "未创建空 HAR（CONNECT 不会伪装成请求）"
+            )
+        if self._session.evidence == EVIDENCE_NONE:
+            return (
+                "代理侧未观察到任何 HTTP 请求：被测 App 可能走缓存/未发起请求，"
+                "或流量不是可解密的 HTTP；未创建空 HAR"
+            )
+        return (
+            "代理侧未观察到任何 HTTP 请求（连接存在但无可写入的请求/响应）；"
+            "未创建空 HAR"
+        )
+
+    def _compose_har(self) -> None:
+        """流式合成 app.har；零有效条目不创建文件，证书拒绝时仅明文为 partial。"""
+        self._har_composed = True
+        har = self._session.har
+        if har is None or not self._har_entries_path or not self._har_path:
+            return
+        stats = read_har_log_stats(self._log_path)
+        meta = {
+            "enabled": True,
+            "status": STATUS_COMPLETE,
+            "bodyMode": self._capture.body_mode,
+            "redacted": self._capture.redact,
+            "droppedEntries": stats["dropped"],
+            "truncated": bool(stats["dropped"]),
+            "truncatedReason": stats["reason"],
+            "writerErrors": stats["errors"],
+            "httpsCoverage": "none",
+        }
+        summary = compose_har(self._har_entries_path, self._har_path, meta=meta)
+        if stats["initErrors"]:
+            # 抓包写入链路没起来，绝不能把原因说成「App 没有发请求」。
+            summary.status = STATUS_FAILED
+            summary.path = None
+            summary.not_tested_reason = (
+                "HAR 写入链路初始化失败：" + "；".join(stats["initErrors"])
+            )
+            self._session.har = summary
+            return
+        if summary.status == STATUS_FAILED:
+            self._session.har = summary
+            return
+        if summary.entries == 0:
+            summary.status = STATUS_NOT_TESTED
+            summary.path = None
+            summary.not_tested_reason = self._har_unavailable_reason()
+        elif self._session.trust == TRUST_REJECTED:
+            # 证书拒绝：HAR 里只可能有真实明文 HTTP；绝不把 CONNECT 当请求
+            summary.status = STATUS_PARTIAL
+            summary.https_coverage = "none"
+            summary.not_tested_reason = (
+                "HTTPS 未解密：被测 App 不信任代理 CA，HAR 仅包含真实明文 HTTP 请求；"
+                "CONNECT 不会写成请求"
+            )
+        else:
+            summary.status = STATUS_COMPLETE
+            summary.https_coverage = (
+                "full" if self._session.trust == TRUST_OK else "none"
+            )
+        self._session.har = summary
 
     def __enter__(self) -> NetProfiler:
         return self
@@ -815,6 +996,22 @@ class NetProfiler:
         )
         environment["MOBILE_PERF_NETTIER"] = self.tier
         environment["MOBILE_PERF_NETLOG"] = str(self._log_path)
+        if self._capture.enabled and self._har_entries_path:
+            # 单行 JSON 经环境变量传递：路径含空格/中文也安全，不拼命令行
+            environment["MOBILE_PERF_HAR"] = json.dumps(
+                {
+                    "entriesPath": self._har_entries_path,
+                    "bodyMode": self._capture.body_mode,
+                    "captureBodies": self._capture.capture_bodies,
+                    "bodyLimitBytes": self._capture.body_limit_bytes,
+                    "maxEntries": self._capture.max_entries,
+                    "maxBytes": self._capture.max_bytes,
+                    "redact": self._capture.redact,
+                    "maxHashBytes": self._capture.max_hash_bytes,
+                },
+                ensure_ascii=False,
+            )
+            environment["MOBILE_PERF_HAR_ENTRIES"] = self._har_entries_path
         args = [
             executable,
             "-q",

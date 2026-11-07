@@ -1,0 +1,418 @@
+{"t": 1794036309.363132, "ev": "params", "latencyMs": 0.0, "downKbps": 0.0, "upKbps": 0.0, "lossPct": 0.0, "lossMode": "none", "tier": "decrypt", "harEnabled": true}
+{"t": 1794036309.503259, "ev": "client_connected", "cid": "693dba1c-e1b3-400e-9567-feab2ed547c2"}
+{"t": 1794036309.513278, "ev": "client_disconnected", "cid": "693dba1c-e1b3-400e-9567-feab2ed547c2", "error": "None"}
+{"t": 1794036310.327663, "ev": "client_connected", "cid": "61cec2f8-a8dc-49ab-9df2-41b9dc86e869"}
+{"t": 1794036310.33218, "ev": "http_connect", "cid": "61cec2f8-a8dc-49ab-9df2-41b9dc86e869", "host": "firebaseinstallations.googleapis.com", "port": 443}
+{"t": 1794036310.35488, "ev": "trust_probe", "ok": false, "error": "The client does not trust the proxy's certificate for firebaseinstallations.googleapis.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))", "host": "firebaseinstallations.googleapis.com", "certRejected": true}
+{"t": 1794036310.356433, "ev": "client_disconnected", "cid": "61cec2f8-a8dc-49ab-9df2-41b9dc86e869", "error": "The client does not trust the proxy's certificate for firebaseinstallations.googleapis.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))"}
+{"t": 1794036311.195978, "ev": "client_connected", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d"}
+{"t": 1794036311.196978, "ev": "client_connected", "cid": "7635b711-949b-41c0-9c93-35030cefafdf"}
+{"t": 1794036311.198979, "ev": "client_connected", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5"}
+{"t": 1794036311.200979, "ev": "client_connected", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc"}
+{"t": 1794036311.201979, "ev": "client_connected", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d"}
+{"t": 1794036311.20551, "ev": "client_connected", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86"}
+{"t": 1794036311.210512, "ev": "client_connected", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea"}
+{"t": 1794036311.21251, "ev": "http_connect", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.215613, "ev": "http_connect", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.217625, "ev": "http_connect", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.221619, "ev": "http_connect", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.225121, "ev": "client_connected", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff"}
+{"t": 1794036311.229125, "ev": "http_connect", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.231127, "ev": "http_connect", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.232126, "ev": "client_connected", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436"}
+{"t": 1794036311.237634, "ev": "http_connect", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.240635, "ev": "client_connected", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4"}
+{"t": 1794036311.243634, "ev": "http_connect", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.244636, "ev": "client_connected", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320"}
+{"t": 1794036311.246144, "ev": "http_connect", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.247649, "ev": "client_connected", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5"}
+{"t": 1794036311.249654, "ev": "http_connect", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.250654, "ev": "tcp_start", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.250654, "ev": "tcp_start", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.252654, "ev": "tcp_start", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.253654, "ev": "client_connected", "cid": "8892e797-470a-42b2-b860-3b1f452897d5"}
+{"t": 1794036311.254655, "ev": "http_connect", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.255764, "ev": "server_connect", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.256769, "ev": "server_connect", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.259768, "ev": "server_connect", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.260771, "ev": "tcp_start", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.262857, "ev": "client_connected", "cid": "115aa689-791d-468c-828a-094289391cfe"}
+{"t": 1794036311.263855, "ev": "http_connect", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.263855, "ev": "server_connect", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.266365, "ev": "tcp_start", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.267366, "ev": "tcp_start", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.267366, "ev": "tcp_start", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.27037, "ev": "client_connected", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf"}
+{"t": 1794036311.272366, "ev": "http_connect", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.273367, "ev": "server_connect", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.274366, "ev": "server_connect", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.274871, "ev": "server_connect", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.277383, "ev": "tcp_start", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.278885, "ev": "http_connect", "cid": "115aa689-791d-468c-828a-094289391cfe", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.279892, "ev": "server_connect", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.28289, "ev": "tcp_start", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.28389, "ev": "http_connect", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.28489, "ev": "server_connect", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.28489, "ev": "tcp_start", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.287318, "ev": "server_connect", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.289318, "ev": "tcp_start", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.29032, "ev": "server_connect", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.294823, "ev": "tcp_start", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.296827, "ev": "tcp_start", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.301829, "ev": "server_connect", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.303827, "ev": "server_connect", "cid": "115aa689-791d-468c-828a-094289391cfe", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.304828, "ev": "tcp_start", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.306883, "ev": "server_connect", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.307885, "ev": "tcp_start", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.308885, "ev": "server_connect", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036311.479028, "ev": "server_connected", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d"}
+{"t": 1794036311.480028, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 517}
+{"t": 1794036311.483036, "ev": "server_connected", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5"}
+{"t": 1794036311.486065, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 517}
+{"t": 1794036311.488627, "ev": "server_connected", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea"}
+{"t": 1794036311.488627, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": true, "size": 517}
+{"t": 1794036311.492624, "ev": "server_connected", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86"}
+{"t": 1794036311.492624, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": true, "size": 517}
+{"t": 1794036311.493624, "ev": "server_connected", "cid": "7635b711-949b-41c0-9c93-35030cefafdf"}
+{"t": 1794036311.495675, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": true, "size": 517}
+{"t": 1794036311.498685, "ev": "server_connected", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d"}
+{"t": 1794036311.501676, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 517}
+{"t": 1794036311.506982, "ev": "server_connected", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff"}
+{"t": 1794036311.509983, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 517}
+{"t": 1794036311.511982, "ev": "server_connected", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc"}
+{"t": 1794036311.512975, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": true, "size": 517}
+{"t": 1794036311.512975, "ev": "server_connected", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4"}
+{"t": 1794036311.51448, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 517}
+{"t": 1794036311.51448, "ev": "server_connected", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436"}
+{"t": 1794036311.519155, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 517}
+{"t": 1794036311.520149, "ev": "server_connected", "cid": "115aa689-791d-468c-828a-094289391cfe"}
+{"t": 1794036311.520149, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 517}
+{"t": 1794036311.521148, "ev": "server_connected", "cid": "8892e797-470a-42b2-b860-3b1f452897d5"}
+{"t": 1794036311.521148, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 517}
+{"t": 1794036311.524669, "ev": "server_connected", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5"}
+{"t": 1794036311.525939, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": true, "size": 517}
+{"t": 1794036311.526947, "ev": "server_connected", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf"}
+{"t": 1794036311.529951, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": true, "size": 517}
+{"t": 1794036311.53195, "ev": "server_connected", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320"}
+{"t": 1794036311.532945, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 517}
+{"t": 1794036311.691474, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036311.697035, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 1452}
+{"t": 1794036311.700042, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 2937}
+{"t": 1794036311.701051, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036311.705564, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036311.706565, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": false, "size": 1452}
+{"t": 1794036311.712564, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 33}
+{"t": 1794036311.714575, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": false, "size": 1452}
+{"t": 1794036311.719622, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036311.720628, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 2904}
+{"t": 1794036311.722627, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 33}
+{"t": 1794036311.722627, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": false, "size": 1452}
+{"t": 1794036311.722627, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": false, "size": 4356}
+{"t": 1794036311.72413, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": false, "size": 33}
+{"t": 1794036311.729657, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": false, "size": 1452}
+{"t": 1794036311.733657, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036311.736767, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": false, "size": 1452}
+{"t": 1794036311.737768, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": false, "size": 1452}
+{"t": 1794036311.740245, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 64}
+{"t": 1794036311.741244, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 2904}
+{"t": 1794036311.742245, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 1485}
+{"t": 1794036311.743244, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036311.744749, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": false, "size": 1452}
+{"t": 1794036311.745755, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": false, "size": 1452}
+{"t": 1794036311.745755, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 83}
+{"t": 1794036311.748263, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": true, "size": 64}
+{"t": 1794036311.748263, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 35}
+{"t": 1794036311.749766, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 64}
+{"t": 1794036311.750772, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036311.751773, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": false, "size": 1452}
+{"t": 1794036311.752772, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 1374}
+{"t": 1794036311.753772, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 64}
+{"t": 1794036311.753772, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 46}
+{"t": 1794036311.756798, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 1477}
+{"t": 1794036311.756798, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 33}
+{"t": 1794036311.757797, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 83}
+{"t": 1794036311.760798, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 1445}
+{"t": 1794036311.760798, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": true, "size": 1481}
+{"t": 1794036311.764796, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 64}
+{"t": 1794036311.767167, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 118}
+{"t": 1794036311.768167, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 1369}
+{"t": 1794036311.79123, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 64}
+{"t": 1794036311.796364, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 46}
+{"t": 1794036311.796364, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 72}
+{"t": 1794036311.797364, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 1366}
+{"t": 1794036311.947969, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 271}
+{"t": 1794036311.950669, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 333}
+{"t": 1794036311.952676, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": false, "size": 604}
+{"t": 1794036311.958237, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 271}
+{"t": 1794036311.960236, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 364}
+{"t": 1794036311.961234, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 31}
+{"t": 1794036311.964745, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 271}
+{"t": 1794036311.966753, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 333}
+{"t": 1794036311.968753, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": true, "size": 31}
+{"t": 1794036311.970257, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 31}
+{"t": 1794036311.971261, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": false, "size": 4356}
+{"t": 1794036311.972703, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 635}
+{"t": 1794036311.978416, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 31}
+{"t": 1794036311.988439, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 271}
+{"t": 1794036311.990958, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 333}
+{"t": 1794036311.991959, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 31}
+{"t": 1794036311.992959, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 31}
+{"t": 1794036311.999476, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": false, "size": 2904}
+{"t": 1794036312.00098, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": false, "size": 2937}
+{"t": 1794036312.0057, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 31}
+{"t": 1794036312.008205, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": false, "size": 2937}
+{"t": 1794036312.009207, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 31}
+{"t": 1794036312.011206, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 64}
+{"t": 1794036312.014206, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 46}
+{"t": 1794036312.014709, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 37}
+{"t": 1794036312.017227, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 35}
+{"t": 1794036312.018235, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": true, "size": 64}
+{"t": 1794036312.019235, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 90}
+{"t": 1794036312.02174, "ev": "tcp_message", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "from_client": true, "size": 24}
+{"t": 1794036312.022745, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": true, "size": 46}
+{"t": 1794036312.022745, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": true, "size": 104}
+{"t": 1794036312.024772, "ev": "tcp_end", "fid": "f7231e5e-ecfa-4b77-b500-6ccdffefe798", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4"}
+{"t": 1794036312.025775, "ev": "server_disconnected", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4"}
+{"t": 1794036312.028291, "ev": "tcp_message", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "from_client": true, "size": 96}
+{"t": 1794036312.029283, "ev": "tcp_end", "fid": "bb7409e0-de16-43dd-b09b-eb4688a659dd", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5"}
+{"t": 1794036312.030281, "ev": "server_disconnected", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5"}
+{"t": 1794036312.033283, "ev": "client_disconnected", "cid": "b92fed78-d1ee-405a-9dca-ad0d3778e5b4", "error": "None"}
+{"t": 1794036312.034786, "ev": "client_disconnected", "cid": "ddd84813-c68a-4f55-8dc0-c2a9a3a998b5", "error": "None"}
+{"t": 1794036312.035791, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 31}
+{"t": 1794036312.049363, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": false, "size": 1452}
+{"t": 1794036312.054878, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": false, "size": 1452}
+{"t": 1794036312.061555, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": false, "size": 1485}
+{"t": 1794036312.111609, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": true, "size": 64}
+{"t": 1794036312.11613, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": true, "size": 46}
+{"t": 1794036312.120262, "ev": "tcp_message", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "from_client": true, "size": 96}
+{"t": 1794036312.121258, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 77}
+{"t": 1794036312.123289, "ev": "tcp_end", "fid": "5068ca99-54d7-40e1-ac87-d94f8b9671c8", "cid": "7635b711-949b-41c0-9c93-35030cefafdf"}
+{"t": 1794036312.124793, "ev": "server_disconnected", "cid": "7635b711-949b-41c0-9c93-35030cefafdf"}
+{"t": 1794036312.125798, "ev": "client_disconnected", "cid": "7635b711-949b-41c0-9c93-35030cefafdf", "error": "None"}
+{"t": 1794036312.147655, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 1452}
+{"t": 1794036312.154821, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 1452}
+{"t": 1794036312.161328, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 338}
+{"t": 1794036312.175892, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036312.18189, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036312.188584, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 540}
+{"t": 1794036312.20274, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": false, "size": 33}
+{"t": 1794036312.209766, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 64}
+{"t": 1794036312.213766, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 46}
+{"t": 1794036312.214767, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 37}
+{"t": 1794036312.216824, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 35}
+{"t": 1794036312.217824, "ev": "tcp_message", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe", "from_client": true, "size": 24}
+{"t": 1794036312.218915, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 73}
+{"t": 1794036312.219916, "ev": "tcp_end", "fid": "9df97c5e-270b-4248-871b-5c3f811711fb", "cid": "115aa689-791d-468c-828a-094289391cfe"}
+{"t": 1794036312.220916, "ev": "server_disconnected", "cid": "115aa689-791d-468c-828a-094289391cfe"}
+{"t": 1794036312.223982, "ev": "client_disconnected", "cid": "115aa689-791d-468c-828a-094289391cfe", "error": "None"}
+{"t": 1794036312.344699, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.350465, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 850}
+{"t": 1794036312.374516, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 1452}
+{"t": 1794036312.381529, "ev": "tcp_message", "fid": "671ce36d-2b4b-427e-9d1e-49acc8598e8b", "cid": "310d57ee-aa1a-43f6-b78f-badfb299790d", "from_client": false, "size": 918}
+{"t": 1794036312.47079, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 802}
+{"t": 1794036312.474298, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 31}
+{"t": 1794036312.490087, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 3587}
+{"t": 1794036312.49207, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 1258}
+{"t": 1794036312.557317, "ev": "tcp_message", "fid": "074a8b93-589d-4675-9121-6a9f3c90fe8a", "cid": "22081064-ff3b-40fb-b53a-fcfe6ccc8c86", "from_client": false, "size": 723}
+{"t": 1794036312.604879, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": false, "size": 33}
+{"t": 1794036312.611088, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": true, "size": 64}
+{"t": 1794036312.620668, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": true, "size": 46}
+{"t": 1794036312.623666, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": true, "size": 72}
+{"t": 1794036312.624666, "ev": "tcp_message", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "from_client": true, "size": 24}
+{"t": 1794036312.625848, "ev": "tcp_end", "fid": "88db4712-ae5e-405a-ae96-b4329ab7cf7f", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea"}
+{"t": 1794036312.626852, "ev": "server_disconnected", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea"}
+{"t": 1794036312.627851, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 73}
+{"t": 1794036312.629859, "ev": "client_disconnected", "cid": "530fcb42-91b8-4257-9c96-8abb1eddd2ea", "error": "None"}
+{"t": 1794036312.678324, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 2397}
+{"t": 1794036312.697083, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 1272}
+{"t": 1794036312.731876, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.7386, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.744597, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.75167, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.758021, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.764543, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.767291, "ev": "client_connected", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a"}
+{"t": 1794036312.768297, "ev": "client_connected", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa"}
+{"t": 1794036312.769613, "ev": "http_connect", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.770613, "ev": "http_connect", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.773612, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.774615, "ev": "tcp_start", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.775652, "ev": "server_connect", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.778178, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.779178, "ev": "tcp_start", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.779178, "ev": "server_connect", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036312.783693, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.79021, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036312.793212, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 788}
+{"t": 1794036312.801794, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 109}
+{"t": 1794036312.870907, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": false, "size": 1452}
+{"t": 1794036313.019076, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 11616}
+{"t": 1794036313.056715, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 13831}
+{"t": 1794036313.11173, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": false, "size": 33}
+{"t": 1794036313.117827, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": true, "size": 64}
+{"t": 1794036313.121868, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": true, "size": 46}
+{"t": 1794036313.123867, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": true, "size": 72}
+{"t": 1794036313.123867, "ev": "tcp_message", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "from_client": true, "size": 24}
+{"t": 1794036313.124867, "ev": "tcp_end", "fid": "2260c27e-4e99-4a55-a4d1-d0075c184691", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf"}
+{"t": 1794036313.125987, "ev": "server_disconnected", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf"}
+{"t": 1794036313.126986, "ev": "client_disconnected", "cid": "69c0e447-1cfd-40a9-bf74-dd8ae8f883cf", "error": "None"}
+{"t": 1794036313.127989, "ev": "server_connected", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a"}
+{"t": 1794036313.130499, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 517}
+{"t": 1794036313.132523, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 91}
+{"t": 1794036313.133512, "ev": "server_connected", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa"}
+{"t": 1794036313.133512, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": true, "size": 517}
+{"t": 1794036313.134511, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 1452}
+{"t": 1794036313.139597, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 532}
+{"t": 1794036313.179265, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036313.18591, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 624}
+{"t": 1794036313.224608, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": true, "size": 1276}
+{"t": 1794036313.226713, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": true, "size": 1312}
+{"t": 1794036313.227712, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 91}
+{"t": 1794036313.231729, "ev": "client_connected", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c"}
+{"t": 1794036313.232733, "ev": "http_connect", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036313.237843, "ev": "tcp_start", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036313.238846, "ev": "server_connect", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036313.262308, "ev": "client_connected", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f"}
+{"t": 1794036313.265834, "ev": "http_connect", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.269951, "ev": "tcp_start", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.270952, "ev": "server_connect", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.301694, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": false, "size": 33}
+{"t": 1794036313.307931, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 64}
+{"t": 1794036313.316792, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 46}
+{"t": 1794036313.317793, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 37}
+{"t": 1794036313.318297, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 35}
+{"t": 1794036313.320817, "ev": "tcp_message", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "from_client": true, "size": 24}
+{"t": 1794036313.321808, "ev": "tcp_end", "fid": "27c85c46-0931-4d06-88e1-0c63a42c2ce1", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d"}
+{"t": 1794036313.321808, "ev": "server_disconnected", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d"}
+{"t": 1794036313.323311, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 89}
+{"t": 1794036313.323311, "ev": "client_disconnected", "cid": "d0d316e2-970c-4ae3-909a-26af5926475d", "error": "None"}
+{"t": 1794036313.339762, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": false, "size": 1452}
+{"t": 1794036313.443866, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036313.445937, "ev": "server_connected", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c"}
+{"t": 1794036313.449467, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 517}
+{"t": 1794036313.452509, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1114}
+{"t": 1794036313.500532, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 91}
+{"t": 1794036313.54267, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 1452}
+{"t": 1794036313.548852, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 1452}
+{"t": 1794036313.550844, "ev": "client_connected", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4"}
+{"t": 1794036313.555171, "ev": "client_connected", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0"}
+{"t": 1794036313.55769, "ev": "http_connect", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.55769, "ev": "tcp_message", "fid": "ba9fa9de-e011-4386-8e32-eb6a9c45e285", "cid": "c1436c0f-7b90-414c-8fbe-01cd5fe9e5c5", "from_client": false, "size": 338}
+{"t": 1794036313.55869, "ev": "http_connect", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.564688, "ev": "tcp_start", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.566195, "ev": "server_connect", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.570194, "ev": "tcp_start", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.572202, "ev": "server_connect", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "host": "slp-singapore-uat.oss-ap-southeast-1.aliyuncs.com", "port": 443}
+{"t": 1794036313.590379, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 1452}
+{"t": 1794036313.594888, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": false, "size": 1485}
+{"t": 1794036313.595892, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 1452}
+{"t": 1794036313.602939, "ev": "tcp_message", "fid": "60da2ac9-9ee1-470d-b96d-d40cdac1f263", "cid": "ce9a158d-894d-442a-8fea-55f5dfb82436", "from_client": false, "size": 683}
+{"t": 1794036313.605641, "ev": "server_connected", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f"}
+{"t": 1794036313.606633, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": true, "size": 517}
+{"t": 1794036313.610641, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036313.611633, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": true, "size": 64}
+{"t": 1794036313.617778, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1114}
+{"t": 1794036313.618778, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": true, "size": 46}
+{"t": 1794036313.619779, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": true, "size": 72}
+{"t": 1794036313.621897, "ev": "tcp_message", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "from_client": true, "size": 24}
+{"t": 1794036313.622893, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": true, "size": 78}
+{"t": 1794036313.623891, "ev": "tcp_end", "fid": "d2b89ce5-4819-498e-9013-b491dd44ba4b", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc"}
+{"t": 1794036313.625914, "ev": "server_disconnected", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc"}
+{"t": 1794036313.626914, "ev": "client_disconnected", "cid": "3f6878bf-4830-4a89-a239-78a2705f04dc", "error": "None"}
+{"t": 1794036313.659394, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 1452}
+{"t": 1794036313.660395, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 2937}
+{"t": 1794036313.677804, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 64}
+{"t": 1794036313.683828, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 46}
+{"t": 1794036313.68482, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 72}
+{"t": 1794036313.687871, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 1409}
+{"t": 1794036313.822095, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036313.826656, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1114}
+{"t": 1794036313.835716, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 5808}
+{"t": 1794036313.87988, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 271}
+{"t": 1794036313.882398, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 333}
+{"t": 1794036313.888181, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 31}
+{"t": 1794036313.910402, "ev": "server_connected", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0"}
+{"t": 1794036313.912401, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": true, "size": 517}
+{"t": 1794036313.915943, "ev": "server_connected", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4"}
+{"t": 1794036313.91895, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": true, "size": 517}
+{"t": 1794036313.927051, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": true, "size": 31}
+{"t": 1794036313.932045, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 1452}
+{"t": 1794036313.934829, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 4801}
+{"t": 1794036313.941327, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 929}
+{"t": 1794036313.943704, "ev": "tcp_message", "fid": "17c2fd43-b51d-41cb-8e43-8785ebcb32dd", "cid": "46ff3681-2c99-4979-a830-ca2aa6f3b0ff", "from_client": false, "size": 31}
+{"t": 1794036313.948747, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": false, "size": 1452}
+{"t": 1794036313.95174, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": false, "size": 4801}
+{"t": 1794036313.966387, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": true, "size": 93}
+{"t": 1794036313.970914, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": true, "size": 93}
+{"t": 1794036314.018612, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 1452}
+{"t": 1794036314.025656, "ev": "tcp_message", "fid": "ba371919-87ff-4478-a7d5-e97b35efee3d", "cid": "c92323ae-18cf-4727-8c98-7d8974c2b93c", "from_client": false, "size": 401}
+{"t": 1794036314.214476, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 445}
+{"t": 1794036314.243358, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 93}
+{"t": 1794036314.256213, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": false, "size": 1452}
+{"t": 1794036314.257219, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": false, "size": 4801}
+{"t": 1794036314.263724, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": false, "size": 1452}
+{"t": 1794036314.266775, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": false, "size": 4801}
+{"t": 1794036314.276804, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": true, "size": 93}
+{"t": 1794036314.280509, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": true, "size": 93}
+{"t": 1794036314.306434, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": false, "size": 306}
+{"t": 1794036314.31245, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 306}
+{"t": 1794036314.313451, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": true, "size": 388}
+{"t": 1794036314.318006, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": true, "size": 387}
+{"t": 1794036314.585353, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 306}
+{"t": 1794036314.593509, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 376}
+{"t": 1794036314.684427, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1115}
+{"t": 1794036314.687431, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 463}
+{"t": 1794036314.688441, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036314.695961, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 116}
+{"t": 1794036314.697961, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": true, "size": 382}
+{"t": 1794036314.952661, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 473}
+{"t": 1794036314.960958, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 382}
+{"t": 1794036315.099846, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 463}
+{"t": 1794036315.108508, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": true, "size": 380}
+{"t": 1794036315.323964, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 463}
+{"t": 1794036315.334539, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 380}
+{"t": 1794036315.384752, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 992}
+{"t": 1794036315.388927, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 31}
+{"t": 1794036315.465199, "ev": "client_connected", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628"}
+{"t": 1794036315.467205, "ev": "http_connect", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036315.471204, "ev": "tcp_start", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036315.472204, "ev": "server_connect", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "host": "d-lms-sg-uat.byd.com", "port": 443}
+{"t": 1794036315.520684, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": false, "size": 306}
+{"t": 1794036315.5289, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": true, "size": 380}
+{"t": 1794036315.531899, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": false, "size": 306}
+{"t": 1794036315.538217, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": true, "size": 380}
+{"t": 1794036315.688592, "ev": "server_connected", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628"}
+{"t": 1794036315.689592, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 517}
+{"t": 1794036315.713262, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 463}
+{"t": 1794036315.728087, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": true, "size": 380}
+{"t": 1794036315.824723, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": false, "size": 1452}
+{"t": 1794036315.897945, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": false, "size": 462}
+{"t": 1794036315.906935, "ev": "tcp_message", "fid": "34b82cf8-1347-4b29-abed-d662fe906811", "cid": "82175fce-0f53-4cae-bf20-18996dbe99e4", "from_client": false, "size": 462}
+{"t": 1794036315.909935, "ev": "tcp_message", "fid": "5a94baf1-4908-46c8-ab8e-955ca2b224a0", "cid": "a4b150dc-c82b-44bd-bbd1-c1dd9c4cf4d0", "from_client": true, "size": 329}
+{"t": 1794036315.918468, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 1452}
+{"t": 1794036315.919468, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 2937}
+{"t": 1794036315.930555, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 64}
+{"t": 1794036315.934593, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 46}
+{"t": 1794036315.935644, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 72}
+{"t": 1794036315.938273, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 1398}
+{"t": 1794036316.074555, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": false, "size": 1452}
+{"t": 1794036316.077563, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": false, "size": 1485}
+{"t": 1794036316.092336, "ev": "tcp_message", "fid": "81d271aa-cf0e-48a1-94d1-4dad97e671a9", "cid": "819fbc58-a384-45ce-a43d-c2dd5700cb2a", "from_client": false, "size": 463}
+{"t": 1794036316.13226, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 64}
+{"t": 1794036316.136788, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 46}
+{"t": 1794036316.137788, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 37}
+{"t": 1794036316.138788, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 35}
+{"t": 1794036316.139788, "ev": "tcp_message", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "from_client": true, "size": 24}
+{"t": 1794036316.141789, "ev": "tcp_end", "fid": "8e03c9c6-fed4-4d3c-935f-40c79aa09639", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320"}
+{"t": 1794036316.143293, "ev": "server_disconnected", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320"}
+{"t": 1794036316.144812, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": true, "size": 91}
+{"t": 1794036316.145814, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 604}
+{"t": 1794036316.147815, "ev": "client_disconnected", "cid": "85a28d89-150f-47c2-a81f-85c2bcef6320", "error": "None"}
+{"t": 1794036316.148814, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 31}
+{"t": 1794036316.150815, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": true, "size": 31}
+{"t": 1794036316.347387, "ev": "tcp_message", "fid": "8e5467b2-34dd-4bb0-9eff-05f72003e253", "cid": "491a56bf-bcb3-4cb0-a6fa-49430f4977fa", "from_client": false, "size": 462}
+{"t": 1794036316.534829, "ev": "tcp_message", "fid": "16d027f1-69b1-4fab-b58d-1481f54e2fc4", "cid": "499b198e-909f-4481-896f-2f064f8dfb8f", "from_client": false, "size": 453}
+{"t": 1794036316.612083, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1452}
+{"t": 1794036316.61898, "ev": "tcp_message", "fid": "6468a479-dd72-43a9-bca2-6d2882cb09ca", "cid": "8892e797-470a-42b2-b860-3b1f452897d5", "from_client": false, "size": 1114}
+{"t": 1794036316.955199, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 1452}
+{"t": 1794036316.9628, "ev": "tcp_message", "fid": "d800ad7b-ea1d-4cb0-b937-c548b1f0b249", "cid": "1990de63-f885-4f5a-8cb3-686f4c7d3628", "from_client": false, "size": 124}

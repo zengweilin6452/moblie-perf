@@ -1,0 +1,10 @@
+{"t": 1794036451.105951, "ev": "params", "latencyMs": 0.0, "downKbps": 0.0, "upKbps": 0.0, "lossPct": 0.0, "lossMode": "none", "tier": "decrypt", "harEnabled": true}
+{"t": 1794036451.227632, "ev": "client_connected", "cid": "eeb1aeed-3969-48ef-a827-87f0703049b7"}
+{"t": 1794036451.229677, "ev": "client_disconnected", "cid": "eeb1aeed-3969-48ef-a827-87f0703049b7", "error": "None"}
+{"t": 1794036451.477895, "ev": "client_connected", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942"}
+{"t": 1794036451.480895, "ev": "http_request", "fid": "2502bed3-cfe7-4cb1-8080-06792a327dc0", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942", "method": "GET", "host": "127.0.0.1", "path": "/probe?token=HAR_PROBE_SECRET"}
+{"t": 1794036451.480895, "ev": "server_connect", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942", "host": "127.0.0.1", "port": 4332}
+{"t": 1794036451.481895, "ev": "server_connected", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942"}
+{"t": 1794036451.482895, "ev": "api_request", "fid": "2502bed3-cfe7-4cb1-8080-06792a327dc0", "host": "127.0.0.1", "method": "GET", "route": "GET /probe", "status": 200, "durationMs": 3.0, "sizeBytes": 48}
+{"t": 1794036451.484966, "ev": "server_disconnected", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942"}
+{"t": 1794036451.48702, "ev": "client_disconnected", "cid": "d1f4c30c-aedb-4f0d-bcec-3e646fe90942", "error": "None"}

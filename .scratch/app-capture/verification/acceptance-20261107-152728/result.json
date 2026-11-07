@@ -1,0 +1,139 @@
+{
+  "generatedAt": "2026-11-07T15:27:47",
+  "mitmdump": "D:\\workspace\\claudecode-test\\moblie-xn\\.scratch\\venv-mitm\\Scripts\\mitmdump.exe",
+  "certInstalled": false,
+  "initial": {
+    "serial": "749622c9",
+    "proxy": ":0",
+    "reverse": "",
+    "foreground": "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n"
+  },
+  "plainHttp": {
+    "testPort": 4332,
+    "browserLaunch": {
+      "method": "curl",
+      "returncode": 0,
+      "stdout": "200"
+    },
+    "reverseRemoved": true,
+    "harFile": {
+      "exists": true,
+      "path": "D:\\workspace\\claudecode-test\\moblie-xn\\.scratch\\app-capture\\verification\\acceptance-20261107-152728\\network-plain\\app.har",
+      "sizeBytes": 1337,
+      "version": "1.2",
+      "entries": 1,
+      "methods": [
+        "GET"
+      ],
+      "hasConnectEntry": false,
+      "secretPresent": false,
+      "tokenRedacted": true,
+      "redactedMarkerPresent": true,
+      "statuses": [
+        200
+      ]
+    },
+    "proxyEvents": {
+      "params": 1,
+      "client_connected": 2,
+      "client_disconnected": 2,
+      "http_request": 1,
+      "server_connect": 1,
+      "server_connected": 1,
+      "api_request": 1,
+      "server_disconnected": 1
+    },
+    "doctor": {
+      "proxy": ":0",
+      "reverse": [],
+      "staleProxy": false,
+      "staleReverse": false,
+      "cleaned": false,
+      "proxyClean": true,
+      "reverseClean": true
+    }
+  },
+  "certRejection": {
+    "targetPackage": "com.sinosoft.trainapp",
+    "trust": "rejected",
+    "trustError": "The client does not trust the proxy's certificate for firebaseinstallations.googleapis.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))",
+    "effective": true,
+    "apiEffective": false,
+    "har": {
+      "enabled": true,
+      "status": "not_tested",
+      "path": null,
+      "entriesPath": "D:\\workspace\\claudecode-test\\moblie-xn\\.scratch\\app-capture\\verification\\acceptance-20261107-152728\\network-cert-rejected\\app.har.entries.jsonl",
+      "entries": 0,
+      "sizeBytes": 0,
+      "bodyMode": "metadata",
+      "redacted": true,
+      "truncated": false,
+      "truncatedReason": null,
+      "droppedEntries": 0,
+      "skippedEntries": 0,
+      "writerErrors": 0,
+      "httpsCoverage": "none",
+      "notTestedReason": "HTTPS 未解密：被测 App 不信任代理 CA，且代理侧未观察到明文 HTTP 请求；未创建空 HAR（CONNECT 不会伪装成请求）"
+    },
+    "harFile": {
+      "exists": false
+    },
+    "proxyEvents": {
+      "params": 1,
+      "client_connected": 26,
+      "client_disconnected": 12,
+      "http_connect": 25,
+      "trust_probe": 1,
+      "tcp_start": 24,
+      "server_connect": 24,
+      "server_connected": 24,
+      "tcp_message": 314,
+      "tcp_end": 10,
+      "server_disconnected": 10
+    },
+    "doctor": {
+      "proxy": ":0",
+      "reverse": [],
+      "staleProxy": false,
+      "staleReverse": false,
+      "cleaned": false,
+      "proxyClean": true,
+      "reverseClean": true
+    }
+  },
+  "final": {
+    "serial": "749622c9",
+    "proxy": ":0",
+    "reverse": "",
+    "doctor": {
+      "proxy": ":0",
+      "reverse": [],
+      "staleProxy": false,
+      "staleReverse": false,
+      "cleaned": false,
+      "proxyClean": true,
+      "reverseClean": true
+    }
+  },
+  "checks": {
+    "plainHARExists": true,
+    "plainHARHas200": true,
+    "plainHARNoConnect": true,
+    "plainHARSecretRedacted": true,
+    "plainHARSummaryEnabled": true,
+    "plainHARStatusHonest": true,
+    "plainCoverageHonest": true,
+    "plainDoctorClean": true,
+    "plainReverseRemoved": true,
+    "rejectedHARHonest": true,
+    "rejectedNoEmptyHAR": true,
+    "rejectedNoConnect": true,
+    "rejectedSecretRedacted": true,
+    "rejectedHttpsCoverageHonest": true,
+    "rejectedTrustOrExplanation": true,
+    "rejectedApiStillNotEffective": true,
+    "rejectedDoctorClean": true
+  },
+  "passed": true
+}

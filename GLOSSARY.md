@@ -142,6 +142,15 @@ _Avoid_: 接口耗时（解密档的按 URL 口径，另一概念）、首包时
 缓存与多域名兜底，页面能否打开**不**构成证据。
 _Avoid_: 页面可用性、连通性检查
 
+**APP 抓包产物（HAR Artifact）**:
+采集窗口内经 mitmproxy 观察到的 HTTP 请求/响应，按 HAR 1.2 落到
+`runs/<runId>/network/app.har` 的产物。默认脱敏、默认只记正文元数据
+（size + MIME + sha256）；它是请求/响应证据，**不参与**连接级或接口级指标
+计算，也不改变 `net_proxy.jsonl` 作为代理生效唯一证据的地位。状态固定为
+`not_enabled / not_tested / complete / partial / failed`；证书拒绝时只可能有
+仅含真实明文 HTTP 的 `partial`（`httpsCoverage="none"`），CONNECT 不写成请求。
+_Avoid_: 抓包日志、接口数据（都不含 HAR 1.2 与降级语义）
+
 ## App 侧
 
 **弹窗免重复（Dialog Suppress）**:
