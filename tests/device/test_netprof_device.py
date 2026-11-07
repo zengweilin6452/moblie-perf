@@ -185,3 +185,142 @@ def test_decrypt_tier_degrades_honestly_on_untrusted_app(caller, tmp_path):
         breakdown = profiler.api_breakdown()
         assert breakdown["top"] and breakdown["byHost"]
 
+
+
+# ---------- APP 抓包（HAR）真机门控：明文 HTTP 与证书拒绝双分支 ----------
+
+
+def _start_local_http_probe(caller, secret: str) -> tuple[int, object]:
+    """本机明文 HTTP 端点 + adb reverse；返回 (设备侧端口, server)。
+
+    设备经 ``adb reverse`` 访问 ``127.0.0.1:<port>``，不依赖局域网/防火墙。
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 约定
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Set-Cookie", f"sid={secret}; Path=/; HttpOnly")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = int(server.server_address[1])
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # reverse 是 adb 宿主侧命令，不是设备 shell 命令；失败即明确报错，
+    # 避免后面的 HAR 断言把通道故障误判成「App 没发请求」。
+    result = caller(
+        ["-s", DEVICE_SERIAL, "reverse", f"tcp:{port}", f"tcp:{port}"], 15.0
+    )
+    assert int(getattr(result, "returncode", 1)) == 0, getattr(result, "stdout", "")
+    return port, server
+
+
+def test_har_plain_http_local_endpoint_records_redacted_request(caller, tmp_path):
+    """不装 CA 的完整 HAR 路径：内置浏览器访问本地明文端点，产出脱敏条目。"""
+    import json
+    from pathlib import Path
+
+    from mobile_perf.har_writer import CaptureOptions
+
+    secret = "HAR_PROBE_SECRET"
+    port, server = _start_local_http_probe(caller, secret)
+    profiler = netprof.NetProfiler(
+        adb_path=str(bundled_adb_path()),
+        serial=DEVICE_SERIAL,
+        mitmdump=MITMDUMP,
+        port=PORT,
+        tier=netprof.TIER_DECRYPT,
+        call_device=caller,
+        capture=CaptureOptions(enabled=True),
+    )
+    try:
+        session = profiler.start(netprof.build_profile("none"), work_dir=tmp_path / "har-plain")
+        assert session.applied, session.setup_errors
+        # 默认浏览器打开明文 URL；token 走查询串，Set-Cookie 走响应头
+        _shell(
+            caller,
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.VIEW",
+            "-d",
+            f"http://127.0.0.1:{port}/probe?token={secret}",
+        )
+        time.sleep(DRIVE_SECONDS)
+    finally:
+        session = profiler.stop()
+        removed = caller(
+            ["-s", DEVICE_SERIAL, "reverse", "--remove", f"tcp:{port}"], 15.0
+        )
+        assert int(getattr(removed, "returncode", 1)) == 0, getattr(removed, "stdout", "")
+        server.shutdown()
+        server.server_close()
+
+    har = session.har
+    assert har is not None and har.enabled
+    assert har.status in {"complete", "partial"}, har.not_tested_reason
+    assert har.entries >= 1
+    assert har.redacted is True
+    har_path = Path(har.path)
+    assert har_path.is_file()
+    payload = json.loads(har_path.read_text(encoding="utf-8"))
+    assert payload["log"]["version"] == "1.2"
+    text = har_path.read_text(encoding="utf-8")
+    assert secret not in text
+    assert "token=[REDACTED]" in text
+    # 明文路径不伪装成已解密 HTTPS
+    assert har.https_coverage == "none"
+
+    restored = netprof.doctor(caller, DEVICE_SERIAL, PORT)
+    assert restored["proxyClean"] is True
+    assert restored["reverseClean"] is True
+
+
+def test_har_cert_rejection_never_creates_empty_or_fake_connect_entries(caller, tmp_path):
+    """正式包证书拒绝分支：HAR 只能是 not_tested 或仅明文的 partial，且设备恢复干净。"""
+    from mobile_perf.har_writer import CaptureOptions
+
+    profiler = netprof.NetProfiler(
+        adb_path=str(bundled_adb_path()),
+        serial=DEVICE_SERIAL,
+        mitmdump=MITMDUMP,
+        port=PORT,
+        tier=netprof.TIER_DECRYPT,
+        call_device=caller,
+        capture=CaptureOptions(enabled=True),
+    )
+    try:
+        session = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path / "har-https")
+        assert session.applied, session.setup_errors
+        _shell(caller, "am", "force-stop", TARGET_PACKAGE)
+        _shell(caller, "monkey", "-p", TARGET_PACKAGE, "1")
+        time.sleep(DRIVE_SECONDS)
+        _shell(caller, "input", "swipe", "540", "1600", "540", "600", "300")
+        time.sleep(3.0)
+    finally:
+        session = profiler.stop()
+
+    har = session.har
+    assert har is not None and har.enabled
+    if session.trust == netprof.TRUST_REJECTED:
+        assert har.status in {"not_tested", "partial"}
+        if har.status == "partial":
+            assert har.https_coverage == "none"
+            assert "HTTPS 未解密" in har.not_tested_reason
+    else:
+        # 满足前置条件（debug 包/系统 CA）时允许完整产物
+        assert har.status in {"complete", "partial", "not_tested"}
+    if har.status == "not_tested":
+        assert har.path is None  # 绝不创建空 app.har
+
+    restored = netprof.doctor(caller, DEVICE_SERIAL, PORT)
+    assert restored["proxyClean"] is True
+    assert restored["reverseClean"] is True

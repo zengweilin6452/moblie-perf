@@ -11,7 +11,8 @@
 - **门禁**：judge 纯函数三态结论（pass / fail / not_tested），阈值由宿主显式传入（不入库），基线绑定设备档案与网络档位严格匹配；
 - **补采**：PC 侧 dumpsys 轮询电池温度与 GPU 双源利用率/显存（视机型能力如实降级），与 SoloPi 指标、事件三源同时间轴同图；
 - **逐帧与整页**：gfxinfo framestats 逐帧 P50/P90/P99（工单 15）、页面打标到画面视觉稳定的整页加载耗时 `page_load_ms`（工单 19）；
-- **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；代理只整形 CONNECT 隧道（明文 HTTP 不在范围），要测首屏须在采集窗口内冷启动 App——窗口外起 App 首屏请求已直连发完，档位等于没生效；
+- **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；弱网整形只作用于 CONNECT 隧道（明文 HTTP 不整形，但 HAR 抓包仍会记录），要测首屏须在采集窗口内冷启动 App——窗口外起 App 首屏请求已直连发完，档位等于没生效；
+- **APP 抓包（默认关）**：`--capture-har` 在采集窗口内经同一 mitmproxy 子进程把可观察的 HTTP 请求/响应按 **HAR 1.2** 落到 `runs/<runId>/network/app.har`；默认脱敏、默认只记正文元数据（size + MIME + sha256），与弱网档位正交（单独开启时不写 `sessions.net_profile`）；明文 HTTP 无需 App 信任代理 CA，证书拒绝时只产仅含真实明文请求的 `partial` HAR，不把 CONNECT 伪装成请求；
 - **报告**：每 run 双产物——单文件 HTML（内嵌离线 ECharts，断网可看）+ 同内容 JSON；
 - **设备准入**：DeviceGate 短事务协议，与宿主 UI 自动化的整生命周期租约互不阻塞（录制期间不持锁）。
 
@@ -39,6 +40,9 @@ export MOBILE_PERF_MITMDUMP=~/.local/bin/mitmdump   # 不在 PATH 时用它指�
 mobile-perf doctor --serial <serial>                       # 巡检 + 自愈（幂等）
 mobile-perf collect tv.danmaku.bili --items CPU,FPS,Memory --duration 180
 mobile-perf collect tv.danmaku.bili --net-profile weak --frame-poll   # 弱网 + 逐帧 + 整页
+mobile-perf collect tv.danmaku.bili --capture-har                     # APP 抓包（HAR，默认脱敏/仅元数据）
+mobile-perf collect tv.danmaku.bili --capture-har --net-profile weak --net-tier decrypt
+mobile-perf collect tv.danmaku.bili --capture-har --capture-har-bodies --capture-body-limit-bytes 65536
 mobile-perf report <runId> --baseline bili-home-v3 --threshold mem_pss_mb:lt:220:fail
 mobile-perf trend tv.danmaku.bili --metric mem_pss_mb
 mobile-perf trend tv.danmaku.bili --metric mem_pss_mb --net-profile weak
@@ -109,10 +113,13 @@ ruff check src tests
 
 - GPU 利用率补采依赖机型（kgsl 需 root），不支持时如实降级 `not_tested`，不伪造数据；
 - 充电状态下 Battery/温度项自动标注 `not_tested`（其余照采）；
+- **HAR 覆盖边界**：HTTPS 需被测 App 信任代理 CA；QUIC/UDP、非 HTTP TCP、证书 pinning 与未关闭的 WebSocket 长连接不保证覆盖。mitmproxy 缺失、端口占用或零 HTTP 请求时如实 `not_tested` 并给原因，不创建空 `app.har`；证书拒绝时只有真实明文 HTTP 会进 `partial` HAR（`httpsCoverage="none"`）；
+- `--capture-har-no-redact` 仅用于本地排查，报告会显著标注危险；报告 JSON/HTML 永不内嵌 HAR 正文或敏感原值；
 - SoloPi 内部 adb 走手机 tcpip 5555，与 PC adb 相互独立；keeper 可自动恢复；
 - App 执行 `am force-stop` 会清除无障碍授权（重启不清），需重新授权。
 
 ## 致谢与许可
 
 - 采集内核基于蚂蚁集团开源的 [SoloPi](https://github.com/alipay/SoloPi)，其原始许可与版权归原作者所有；本项目二开部分（弹窗免重复、英文名开关、构建脚本、`mobile_perf` 组件包）遵循项目约定；
+- 弱网整形与 APP 抓包经 [mitmproxy](https://mitmproxy.org/)（MIT）子进程完成；它是**可选依赖**，未 vendor、不随包分发，也未链接进主进程；
 - 报告图表使用 [Apache ECharts](https://echarts.apache.org/)（Apache-2.0，已 vendor 至 `src/mobile_perf/assets/`）。

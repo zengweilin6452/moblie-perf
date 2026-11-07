@@ -1,0 +1,50 @@
+{"t": 1794036297.151335, "ev": "params", "latencyMs": 0.0, "downKbps": 0.0, "upKbps": 0.0, "lossPct": 0.0, "lossMode": "none", "tier": "decrypt", "harEnabled": true}
+{"t": 1794036297.281602, "ev": "client_connected", "cid": "ba9aab77-d589-4cb5-aabf-d829af02fbab"}
+{"t": 1794036297.282602, "ev": "client_disconnected", "cid": "ba9aab77-d589-4cb5-aabf-d829af02fbab", "error": "None"}
+{"t": 1794036299.041648, "ev": "client_connected", "cid": "106ef5f9-d5e6-4a68-ba1b-b5d8a29acda9"}
+{"t": 1794036299.045151, "ev": "http_request", "fid": "dd439cca-cc7a-4cbc-af40-6a32ce8209e4", "cid": "106ef5f9-d5e6-4a68-ba1b-b5d8a29acda9", "method": "POST", "host": "security.browser.miui.com", "path": "/policy/check?miuiStable=1&client_version_code=180202400&client_version_name=18.2.240613&isAdvertisingEnabled=true"}
+{"t": 1794036299.049189, "ev": "server_connect", "cid": "106ef5f9-d5e6-4a68-ba1b-b5d8a29acda9", "host": "security.browser.miui.com", "port": 80}
+{"t": 1794036299.052181, "ev": "client_connected", "cid": "0ea86504-bd9b-4c47-874c-350d5ab77aba"}
+{"t": 1794036299.052181, "ev": "client_connected", "cid": "554793c8-6299-43a2-b7f1-09ce21679c79"}
+{"t": 1794036299.054691, "ev": "http_connect", "cid": "0ea86504-bd9b-4c47-874c-350d5ab77aba", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794036299.056199, "ev": "http_connect", "cid": "554793c8-6299-43a2-b7f1-09ce21679c79", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794036299.091561, "ev": "trust_probe", "ok": false, "error": "The client does not trust the proxy's certificate for security.browser.miui.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))", "host": "security.browser.miui.com", "certRejected": true}
+{"t": 1794036299.09322, "ev": "client_disconnected", "cid": "554793c8-6299-43a2-b7f1-09ce21679c79", "error": "The client does not trust the proxy's certificate for security.browser.miui.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))"}
+{"t": 1794036299.095756, "ev": "client_disconnected", "cid": "0ea86504-bd9b-4c47-874c-350d5ab77aba", "error": "The client does not trust the proxy's certificate for api.browser.miui.com (OpenSSL Error([('SSL routines', '', 'tls alert certificate unknown')]))"}
+{"t": 1794036299.105686, "ev": "server_connected", "cid": "106ef5f9-d5e6-4a68-ba1b-b5d8a29acda9"}
+{"t": 1794036299.15249, "ev": "api_request", "fid": "dd439cca-cc7a-4cbc-af40-6a32ce8209e4", "host": "security.browser.miui.com", "method": "POST", "route": "POST /policy/check", "status": 200, "durationMs": 107.843, "sizeBytes": 106}
+{"t": 1794036299.398828, "ev": "client_connected", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed"}
+{"t": 1794036299.404546, "ev": "http_connect", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794036299.409624, "ev": "tcp_start", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794036299.409624, "ev": "server_connect", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794036299.4607, "ev": "server_connected", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed"}
+{"t": 1794036299.463707, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": true, "size": 517}
+{"t": 1794036299.507158, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 1452}
+{"t": 1794036299.508165, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 1705}
+{"t": 1794036299.531291, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": true, "size": 85}
+{"t": 1794036299.574874, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 266}
+{"t": 1794036299.578412, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 61}
+{"t": 1794036299.585862, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": true, "size": 45}
+{"t": 1794036299.586862, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": true, "size": 36}
+{"t": 1794036299.624698, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": true, "size": 954}
+{"t": 1794036299.627229, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 30}
+{"t": 1794036299.668516, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 47}
+{"t": 1794036299.676894, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 205}
+{"t": 1794036299.678408, "ev": "tcp_message", "fid": "c0d8ad33-868f-418f-8a93-a4dcd7494456", "cid": "12886f46-f3e2-4844-a6e5-a9b0b605f9ed", "from_client": false, "size": 205}
+{"t": 1794036304.120802, "ev": "client_connected", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4"}
+{"t": 1794036304.121939, "ev": "http_connect", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794036304.126956, "ev": "tcp_start", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794036304.128961, "ev": "server_connect", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794036304.181036, "ev": "server_connected", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4"}
+{"t": 1794036304.182036, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": true, "size": 517}
+{"t": 1794036304.225808, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 1408}
+{"t": 1794036304.226809, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 1749}
+{"t": 1794036304.257403, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": true, "size": 85}
+{"t": 1794036304.30283, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 282}
+{"t": 1794036304.303831, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 61}
+{"t": 1794036304.314966, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": true, "size": 45}
+{"t": 1794036304.316564, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": true, "size": 36}
+{"t": 1794036304.357756, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 30}
+{"t": 1794036304.360765, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": true, "size": 6806}
+{"t": 1794036304.404753, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 34}
+{"t": 1794036304.425229, "ev": "tcp_message", "fid": "e88f782c-a91b-4bcd-a189-29043f12902b", "cid": "bc24db55-042d-4710-9703-bb5a1c47b1d4", "from_client": false, "size": 427}

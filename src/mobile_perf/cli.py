@@ -17,6 +17,12 @@ from pathlib import Path
 from . import netprof
 from .adb import default_call_device, default_repo_root, first_online_device, resolve_adb
 from .gate import GateBusyError
+from .har_writer import (
+    DEFAULT_BODY_LIMIT_BYTES,
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_ENTRIES,
+    CaptureOptions,
+)
 from .judge import JudgeSpec
 from .kit import CollectError, PerfKit, ProfileMismatchError, TrendError
 from .report import assemble_run_report, write_html, write_report
@@ -99,11 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument(
         "--net-tier",
         choices=netprof.TIER_NAMES,
-        default=netprof.TIER_PASSTHROUGH,
+        default=None,
         help=(
             "弱网档位模式（ticket 18）：passthrough=不解密（默认，连接级指标）；"
             "decrypt=解 TLS 拿接口级指标。解密档先探测 App 是否信任代理 CA，"
-            "不信任则接口级指标如实 not_tested，不重试"
+            "不信任则接口级指标如实 not_tested，不重试。开启 --capture-har 时"
+            "未显式指定则默认 decrypt；显式传 passthrough 会早失败"
         ),
     )
     collect_parser.add_argument("--net-latency", type=float, help="自定义延迟 ms")
@@ -117,6 +124,47 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument(
         "--net-port", type=int, default=netprof.DEFAULT_PORT,
         help=f"本地代理端口（默认 {netprof.DEFAULT_PORT}）",
+    )
+    collect_parser.add_argument(
+        "--capture-har",
+        action="store_true",
+        help=(
+            "APP 抓包（默认关）：采集窗口内经 mitmproxy 把可观察 HTTP 请求/响应"
+            "按 HAR 1.2 落到 runs/<runId>/network/app.har，并产出去敏摘要"
+        ),
+    )
+    collect_parser.add_argument(
+        "--capture-har-bodies",
+        action="store_true",
+        help="HAR 写入请求/响应正文（默认只记 size+MIME+sha256；需 --capture-har）",
+    )
+    # 数值细项默认 None：用于区分"未显式给出"与"显式给了默认值"，
+    # 前者允许在未开 --capture-har 时忽略，后者必须报参数错误
+    collect_parser.add_argument(
+        "--capture-body-limit-bytes",
+        type=int,
+        default=None,
+        help=f"单个正文最大写入字节数（默认 {DEFAULT_BODY_LIMIT_BYTES}）",
+    )
+    collect_parser.add_argument(
+        "--capture-max-entries",
+        type=int,
+        default=None,
+        help=f"HAR 条目上限（默认 {DEFAULT_MAX_ENTRIES}）",
+    )
+    collect_parser.add_argument(
+        "--capture-max-bytes",
+        type=int,
+        default=None,
+        help=f"HAR entries JSONL 字节上限（默认 {DEFAULT_MAX_BYTES}）",
+    )
+    collect_parser.add_argument(
+        "--capture-har-no-redact",
+        action="store_true",
+        help=(
+            "⚠️ 关闭 HAR 脱敏（仅本地排查）：头/Cookie/查询参数写原值；"
+            "报告仍不内嵌任何原值。需 --capture-har"
+        ),
     )
 
     netprof_parser = sub.add_parser(
@@ -262,6 +310,8 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
     try:
         jank_thresholds = _parse_jank_thresholds(args.jank_threshold)
         net_profile, net_overrides = _parse_net_profile(args)
+        capture_options = _parse_capture_options(args)
+        net_tier = _resolve_net_tier(args.net_tier, capture_options)
     except ValueError as exc:
         print(f"[mobile-perf] collect 参数错误: {exc}", file=sys.stderr)
         return 1
@@ -292,8 +342,13 @@ def _run_collect(args: argparse.Namespace, kit_factory) -> int:
             net_profile=net_profile,
             net_overrides=net_overrides,
             net_mitmdump=args.net_mitmdump,
-            net_tier=args.net_tier,
+            net_tier=net_tier,
             net_port=args.net_port,
+            **(
+                {"capture_har": True, "capture_options": capture_options}
+                if capture_options is not None
+                else {}
+            ),
         )
     except CollectError as exc:
         print(f"[mobile-perf] collect 失败: {exc}", file=sys.stderr)
@@ -333,6 +388,56 @@ def _parse_net_profile(args: argparse.Namespace) -> tuple[str | None, dict[str, 
         overrides = None
     netprof.build_profile(args.net_profile, overrides)  # 早失败：非法档位/参数在这里抛
     return args.net_profile, overrides
+
+
+def _parse_capture_options(args: argparse.Namespace) -> CaptureOptions | None:
+    """把 --capture-* 解析成 CaptureOptions；细项未配主开关、限额非法都早失败。"""
+    enabled = bool(args.capture_har)
+    bodies = bool(args.capture_har_bodies)
+    no_redact = bool(args.capture_har_no_redact)
+    body_limit = args.capture_body_limit_bytes
+    max_entries = args.capture_max_entries
+    max_bytes = args.capture_max_bytes
+    if not enabled:
+        extras = [
+            name
+            for name, given in (
+                ("--capture-har-bodies", bodies),
+                ("--capture-har-no-redact", no_redact),
+                ("--capture-body-limit-bytes", body_limit is not None),
+                ("--capture-max-entries", max_entries is not None),
+                ("--capture-max-bytes", max_bytes is not None),
+            )
+            if given
+        ]
+        if extras:
+            raise ValueError(
+                f"{', '.join(extras)} 需要配合 --capture-har 使用"
+                "（抓包默认关闭，细项不能单独开启）"
+            )
+        return None
+    return CaptureOptions(
+        enabled=True,
+        capture_bodies=bodies,
+        body_limit_bytes=(
+            DEFAULT_BODY_LIMIT_BYTES if body_limit is None else body_limit
+        ),
+        max_entries=DEFAULT_MAX_ENTRIES if max_entries is None else max_entries,
+        max_bytes=DEFAULT_MAX_BYTES if max_bytes is None else max_bytes,
+        redact=not no_redact,
+    )
+
+
+def _resolve_net_tier(raw: str | None, capture: CaptureOptions | None) -> str:
+    """抓包需要解密档：未显式指定时默认 decrypt；显式非 decrypt 早失败。"""
+    if raw is None:
+        return netprof.TIER_DECRYPT if capture is not None else netprof.TIER_PASSTHROUGH
+    if capture is not None and raw != netprof.TIER_DECRYPT:
+        raise ValueError(
+            "--capture-har 需要显式 --net-tier decrypt"
+            f"（收到 {raw}；不会自动改显式档位）"
+        )
+    return raw
 
 
 def _run_netprof(args: argparse.Namespace) -> int:

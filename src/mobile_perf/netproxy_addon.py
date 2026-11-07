@@ -34,16 +34,25 @@ mitmproxy 要求 Python ≥3.12，而本项目运行时 ≥3.10，故它跑在�
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import random
+import sys
 import time
+from pathlib import Path
 
 from mitmproxy.proxy.layers import TCPLayer
 
 _PARAMS = json.loads(os.environ.get("MOBILE_PERF_NETPARAMS") or "{}")
 _LOG_PATH = os.environ.get("MOBILE_PERF_NETLOG") or ""
 _TIER = os.environ.get("MOBILE_PERF_NETTIER") or "passthrough"
+
+# HAR 抓包（默认关闭）：配置经单行 JSON 环境变量传入，addon 按同目录文件加载
+# ``har_writer``（不依赖主包已安装，也不让主进程 import mitmproxy）。
+_HAR_OPTIONS = None
+_HAR_MODULE = None
+_HAR_WRITER = None
 
 _LATENCY_S = float(_PARAMS.get("latency_ms") or 0) / 1000.0
 _DOWN_BPS = float(_PARAMS.get("down_kbps") or 0) * 1000.0 / 8.0
@@ -80,6 +89,95 @@ def _emit(event: str, **fields) -> None:
         pass
 
 
+def _load_har_writer():
+    """按同目录文件加载 har_writer.py；不要求主包已安装。
+
+    Python 3.12 的 ``dataclasses`` 在处理 ``from __future__ import annotations``
+    的类注解时会回查 ``sys.modules[cls.__module__]``；动态模块必须先注册，否则
+    ``exec_module`` 在 dataclass 装饰器处抛 AttributeError，真实 mitmdump 子进程
+    会静默丢掉整个抓包能力。失败时撤销注册，避免留下半初始化模块。
+    """
+    path = Path(__file__).resolve().parent / "har_writer.py"
+    spec = importlib.util.spec_from_file_location("mobile_perf_har_writer", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载 HAR writer: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
+
+
+def _init_har() -> None:
+    """初始化 HAR 写入链路；任何异常都如实记 har_error，不阻断代理转发。"""
+    global _HAR_OPTIONS, _HAR_MODULE, _HAR_WRITER
+    raw = os.environ.get("MOBILE_PERF_HAR") or ""
+    if not raw:
+        return
+    try:
+        config = json.loads(raw)
+        entries = config.get("entriesPath")
+        env_entries = os.environ.get("MOBILE_PERF_HAR_ENTRIES") or ""
+        if env_entries and entries and env_entries != entries:
+            raise ValueError("MOBILE_PERF_HAR_ENTRIES 与 entriesPath 不一致")
+        entries = entries or env_entries
+        if not entries:
+            raise ValueError("HAR 配置缺少 entriesPath")
+        module = _load_har_writer()
+        options = module.CaptureOptions(
+            enabled=True,
+            capture_bodies=bool(config.get("captureBodies")),
+            body_limit_bytes=int(config.get("bodyLimitBytes") or 65536),
+            max_entries=int(config.get("maxEntries") or 5000),
+            max_bytes=int(config.get("maxBytes") or 67108864),
+            redact=bool(config.get("redact", True)),
+            max_hash_bytes=int(config.get("maxHashBytes") or 8 * 1024 * 1024),
+        )
+        dropped_reasons: set[str] = set()
+
+        def on_drop(reason: str) -> None:
+            # 达到上限后可能持续丢包；只把首个原因写入唯一生效证据日志，
+            # 避免重流量下把 net_proxy.jsonl 灌爆。
+            if reason not in dropped_reasons:
+                dropped_reasons.add(reason)
+                _emit("har_dropped", reason=reason, truncated=True)
+
+        writer = module.HarWriter(
+            entries,
+            max_entries=options.max_entries,
+            max_bytes=options.max_bytes,
+            on_drop=on_drop,
+            on_error=lambda message: _emit("har_error", error=message),
+        )
+    except Exception as exc:  # noqa: BLE001 - 抓包失败不能阻断弱网与采集
+        _emit("har_error", error=f"init: {exc}")
+        return
+    _HAR_OPTIONS = options
+    _HAR_MODULE = module
+    _HAR_WRITER = writer
+
+
+def _write_har(flow, *, error: str | None = None, websocket: bool = False) -> None:
+    """写一条已脱敏 HAR entry；异常统一捕获并 emit har_error，不中断转发。"""
+    if _HAR_WRITER is None or _HAR_MODULE is None or _HAR_OPTIONS is None:
+        return
+    request = getattr(flow, "request", None)
+    if request is not None and str(getattr(request, "method", "")).upper() == "CONNECT":
+        return  # CONNECT 是隧道建立，不是请求；绝不写成伪请求
+    try:
+        entry = _HAR_MODULE.build_entry(flow, _HAR_OPTIONS, error=error)
+        if entry is None:
+            return
+        if websocket:
+            entry["_websocket"] = True
+        _HAR_WRITER.write(entry)
+    except Exception as exc:  # noqa: BLE001 - 单条失败只记事件
+        _emit("har_error", error=str(exc))
+
+
 def load(loader) -> None:
     _emit(
         "params",
@@ -89,7 +187,12 @@ def load(loader) -> None:
         lossPct=_LOSS * 100.0,
         lossMode="stall_emulation" if _LOSS else "none",
         tier=_TIER,
+        harEnabled=bool(_HAR_WRITER),
     )
+
+
+# 模块加载即初始化（配置缺失时什么也不做）
+_init_har()
 
 
 def next_layer(data) -> None:
@@ -167,7 +270,12 @@ def _api_url(flow) -> tuple[str, str]:
 
 
 def response(flow) -> None:
-    """解密档产出接口级明细；直通档该钩子不会触发（没有解密就没有 HTTP 层）。"""
+    """HAR 条目在所有档位都写；接口级明细仍只在解密档产出。
+
+    明文 HTTP 不需要 App 信任代理 CA，因此即使 ``passthrough`` 或证书被拒绝，
+    只要 mitmproxy 解出了 HTTP 层，就应留下真实请求/响应。
+    """
+    _write_har(flow)
     if _TIER != "decrypt":
         return
     request, resp = flow.request, flow.response
@@ -286,3 +394,10 @@ def request(flow) -> None:
 
 def error(flow) -> None:
     _emit("error", fid=flow.id, error=str(flow.error))
+    # 错误 flow 也要有条目：response.status=0 且 _error 非空，绝不静默丢样本
+    _write_har(flow, error=str(flow.error))
+
+
+def websocket_end(flow) -> None:
+    """WebSocket 正常关闭时落一条条目（未关闭的长连接不在保证覆盖内）。"""
+    _write_har(flow, websocket=True)

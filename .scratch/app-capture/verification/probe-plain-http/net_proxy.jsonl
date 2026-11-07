@@ -1,0 +1,105 @@
+{"t": 1794032319.952385, "ev": "params", "latencyMs": 0.0, "downKbps": 0.0, "upKbps": 0.0, "lossPct": 0.0, "lossMode": "none", "tier": "passthrough"}
+{"t": 1794032322.625385, "ev": "client_connected", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f"}
+{"t": 1794032322.628967, "ev": "http_connect", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.645324, "ev": "tcp_start", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.64584, "ev": "server_connect", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.702451, "ev": "server_connected", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f"}
+{"t": 1794032322.703454, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": true, "size": 517}
+{"t": 1794032322.746462, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 1452}
+{"t": 1794032322.749748, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 1705}
+{"t": 1794032322.781266, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": true, "size": 85}
+{"t": 1794032322.791072, "ev": "client_connected", "cid": "d676fed6-a54f-4488-b3e7-4a67c82f8f8a"}
+{"t": 1794032322.793072, "ev": "http_request", "fid": "e300e6f2-165f-4426-bb49-e1b5bc3489e1", "cid": "d676fed6-a54f-4488-b3e7-4a67c82f8f8a", "method": "POST", "host": "security.browser.miui.com", "path": "/policy/check?miuiStable=1&client_version_code=180202400&client_version_name=18.2.240613&isAdvertisingEnabled=true"}
+{"t": 1794032322.794072, "ev": "server_connect", "cid": "d676fed6-a54f-4488-b3e7-4a67c82f8f8a", "host": "security.browser.miui.com", "port": 80}
+{"t": 1794032322.818488, "ev": "client_connected", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8"}
+{"t": 1794032322.82109, "ev": "http_connect", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.823751, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 266}
+{"t": 1794032322.824795, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 61}
+{"t": 1794032322.825835, "ev": "tcp_start", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.828838, "ev": "server_connect", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "host": "api.browser.miui.com", "port": 443}
+{"t": 1794032322.839331, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": true, "size": 45}
+{"t": 1794032322.840397, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": true, "size": 36}
+{"t": 1794032322.845716, "ev": "client_connected", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff"}
+{"t": 1794032322.84672, "ev": "http_connect", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794032322.84872, "ev": "server_connected", "cid": "d676fed6-a54f-4488-b3e7-4a67c82f8f8a"}
+{"t": 1794032322.856539, "ev": "tcp_start", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794032322.857587, "ev": "server_connect", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "host": "security.browser.miui.com", "port": 443}
+{"t": 1794032322.873325, "ev": "server_connected", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8"}
+{"t": 1794032322.874942, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 517}
+{"t": 1794032322.881782, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 30}
+{"t": 1794032322.882786, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": true, "size": 299}
+{"t": 1794032322.902995, "ev": "server_connected", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff"}
+{"t": 1794032322.906103, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 517}
+{"t": 1794032322.919379, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 1452}
+{"t": 1794032322.920986, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 1705}
+{"t": 1794032322.927494, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 34}
+{"t": 1794032322.93064, "ev": "tcp_message", "fid": "2c7cb126-e768-4151-b750-2108fea35eb4", "cid": "18e93cb2-d2e2-428d-a624-7a569fbd4e5f", "from_client": false, "size": 328}
+{"t": 1794032322.935915, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 85}
+{"t": 1794032322.9544, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 1408}
+{"t": 1794032322.955904, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 1749}
+{"t": 1794032322.978841, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 266}
+{"t": 1794032322.98051, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 61}
+{"t": 1794032322.983516, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 45}
+{"t": 1794032322.985488, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 70}
+{"t": 1794032323.007269, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 85}
+{"t": 1794032323.023433, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 312}
+{"t": 1794032323.029747, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 30}
+{"t": 1794032323.052521, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 343}
+{"t": 1794032323.06713, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 34}
+{"t": 1794032323.070501, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 254}
+{"t": 1794032323.071875, "ev": "client_connected", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56"}
+{"t": 1794032323.073325, "ev": "http_connect", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "host": "example.com", "port": 443}
+{"t": 1794032323.074883, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 45}
+{"t": 1794032323.076439, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 70}
+{"t": 1794032323.077487, "ev": "tcp_start", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "host": "example.com", "port": 443}
+{"t": 1794032323.080691, "ev": "server_connect", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "host": "example.com", "port": 443}
+{"t": 1794032323.083906, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 6870}
+{"t": 1794032323.085935, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": true, "size": 30}
+{"t": 1794032323.118084, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 30}
+{"t": 1794032323.127729, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 34}
+{"t": 1794032323.140316, "ev": "tcp_message", "fid": "21bf35ed-9d34-4d6d-89a4-796370b303b7", "cid": "7949a43b-189d-43b3-a591-e4380d0936ff", "from_client": false, "size": 426}
+{"t": 1794032323.270519, "ev": "client_connected", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51"}
+{"t": 1794032323.271518, "ev": "http_connect", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.27845, "ev": "tcp_start", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.280069, "ev": "server_connect", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.33092, "ev": "server_connected", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51"}
+{"t": 1794032323.333624, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 517}
+{"t": 1794032323.377759, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 1452}
+{"t": 1794032323.378855, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 1705}
+{"t": 1794032323.389445, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 85}
+{"t": 1794032323.403445, "ev": "client_connected", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44"}
+{"t": 1794032323.406565, "ev": "http_connect", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.413295, "ev": "tcp_start", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.413971, "ev": "server_connect", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "host": "hot.browser.miui.com", "port": 443}
+{"t": 1794032323.432058, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 266}
+{"t": 1794032323.43473, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 61}
+{"t": 1794032323.437896, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 45}
+{"t": 1794032323.438944, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 36}
+{"t": 1794032323.455443, "ev": "server_connected", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44"}
+{"t": 1794032323.458101, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": true, "size": 517}
+{"t": 1794032323.479734, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 590}
+{"t": 1794032323.480733, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 30}
+{"t": 1794032323.499024, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": false, "size": 1452}
+{"t": 1794032323.502676, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": false, "size": 1705}
+{"t": 1794032323.516373, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": true, "size": 85}
+{"t": 1794032323.52149, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 34}
+{"t": 1794032323.529095, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 205}
+{"t": 1794032323.560613, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": false, "size": 327}
+{"t": 1794032323.566985, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": true, "size": 45}
+{"t": 1794032323.568565, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": true, "size": 70}
+{"t": 1794032323.569649, "ev": "tcp_message", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "from_client": true, "size": 23}
+{"t": 1794032323.572266, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": true, "size": 386}
+{"t": 1794032323.573831, "ev": "tcp_end", "fid": "23a9bd6a-95d5-4c62-b55f-77b09abd82df", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44"}
+{"t": 1794032323.574862, "ev": "server_disconnected", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44"}
+{"t": 1794032323.576943, "ev": "client_disconnected", "cid": "799dfd0b-3dc0-4b1a-915e-06580b687b44", "error": "None"}
+{"t": 1794032323.613592, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 34}
+{"t": 1794032323.618613, "ev": "tcp_message", "fid": "12b22260-8a93-4e96-8cb2-4464dc036f89", "cid": "1e85a6ac-8556-4eb1-839e-405abd5d9b51", "from_client": false, "size": 205}
+{"t": 1794032324.295506, "ev": "server_connected", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56"}
+{"t": 1794032324.296557, "ev": "tcp_message", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "from_client": true, "size": 517}
+{"t": 1794032324.505182, "ev": "tcp_message", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "from_client": false, "size": 1452}
+{"t": 1794032324.506924, "ev": "tcp_message", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "from_client": false, "size": 1641}
+{"t": 1794032324.58219, "ev": "tcp_message", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "from_client": true, "size": 64}
+{"t": 1794032324.790032, "ev": "tcp_message", "fid": "cf34ef60-064e-422d-bf9f-23d30eed088f", "cid": "4834c3ad-ff0a-47bb-abd6-04f29b0ebe56", "from_client": false, "size": 512}
+{"t": 1794032325.864151, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": true, "size": 2905}
+{"t": 1794032325.908676, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 34}
+{"t": 1794032325.914382, "ev": "tcp_message", "fid": "0da9bcf0-0b74-4ae8-a373-83b93b9a2faa", "cid": "d96069d5-24ec-46e4-ac08-10128716c8b8", "from_client": false, "size": 267}
