@@ -137,6 +137,69 @@ def test_jank_grading_keys_are_derived_from_locked_max_delay_column():
         assert spec.unit == "次"
 
 
+# ---- perf-metrics-expansion 01：场景耗电量派生指标（无 SoloPi 原始列） ----
+
+
+def test_battery_consumed_is_derived_from_locked_current_column():
+    """耗电量 key 不映射原始列：由「实时电流(mA)」时序积分派生，来源列必须已锁定。"""
+    from mobile_perf import battery
+
+    assert metrics.column_to_metric("实时电流(mA)").key == battery.SOURCE_METRIC_KEY
+    spec = metrics.METRICS[battery.METRIC_KEY]
+    assert spec.solo_columns == () and spec.solo_shapes == ()
+    assert spec.source == "solo_pi"
+    assert spec.unit == "mAh"
+
+
+# ---- perf-metrics-expansion 02：帧级冻帧/连续段派生指标（pc_supplement） ----
+
+
+def test_frame_frozen_and_streak_keys_are_pc_supplement_derived():
+    from mobile_perf import frameinfo
+
+    for key in (frameinfo.METRIC_FROZEN_RATIO, frameinfo.METRIC_JANK_STREAK):
+        spec = metrics.METRICS[key]
+        assert spec.solo_columns == () and spec.solo_shapes == ()
+        assert spec.source == "pc_supplement"
+    assert metrics.METRICS[frameinfo.METRIC_FROZEN_RATIO].unit == "%"
+    assert metrics.METRICS[frameinfo.METRIC_JANK_STREAK].unit == "帧"
+
+
+# ---- perf-metrics-expansion 03：稳定性计数（pc_supplement，logwatch 事件） ----
+
+
+def test_stability_count_keys_are_pc_supplement_derived():
+    from mobile_perf import logwatch
+
+    for key in (logwatch.METRIC_CRASH_COUNT, logwatch.METRIC_ANR_COUNT):
+        spec = metrics.METRICS[key]
+        assert spec.solo_columns == () and spec.solo_shapes == ()
+        assert spec.source == "pc_supplement"
+        assert spec.unit == "次"
+
+
+# ---- perf-metrics-expansion 04：线程/FD（pc_supplement，/proc 补采） ----
+
+
+def test_proc_stats_keys_are_pc_supplement_derived():
+    for key in ("app_thread_count", "app_fd_count"):
+        spec = metrics.METRICS[key]
+        assert spec.solo_columns == () and spec.solo_shapes == ()
+        assert spec.source == "pc_supplement"
+        assert spec.unit == "个"
+
+
+# ---- perf-metrics-expansion 05：热状态/降频（pc_supplement，只记录不判定） ----
+
+
+def test_thermal_keys_are_pc_supplement_derived():
+    for key, unit in (("device_thermal_status", "级"), ("cpu_freq_max_mhz", "MHz")):
+        spec = metrics.METRICS[key]
+        assert spec.solo_columns == () and spec.solo_shapes == ()
+        assert spec.source == "pc_supplement"
+        assert spec.unit == unit
+
+
 def test_real_csv_granularity_is_per_window_not_per_frame():
     """粒度契约：真实 FPS 延迟列只有 count/ratio/max 三列，无逐帧延迟分布。
 

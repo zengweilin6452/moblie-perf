@@ -3,7 +3,13 @@
 旁路采集：每轮一条独立 adb shell 短命令，不持有 gate 设备权、不影响 SoloPi
 采集；设备采样时间经 keeper 的 device-host 时钟偏移换算到统一时间轴后入库
 （source=pc_supplement，canonical key：temp_battery_c / gpu_util_pct /
-gpu_mem_mb）。真机不支持某项时如实降级（degraded），不硬造数据。
+gpu_mem_mb / app_thread_count / app_fd_count / device_thermal_status /
+cpu_freq_max_mhz）。真机不支持某项时如实降级（degraded），不硬造数据。
+
+线程数/FD 数（perf-metrics-expansion 04）：与显存同一 pid 口径（pidof 恰好
+一个才采），/proc 段由设备侧内联 `$(pidof <pkg>)` 解析 pid；包名过白名单
+（字母数字下划线点）防 shell 注入，不安全包名如实降级不执行。fd 计数读不到
+（权限/进程不存在/空段）返回 None，不伪造 0。
 
 **GPU 利用率走三级降级链**（工单 16）：
 
@@ -60,6 +66,17 @@ GPUBUSY_SECTION = "gpubusy"
 BATTERY_SECTION = "battery"
 GPU_SECTION = "gpu"
 PID_SECTION = "pid"
+PROC_STATUS_SECTION = "procstatus"
+PROC_FD_SECTION = "procfd"
+THERMAL_SECTION = "thermal"
+CPUFREQ_SECTION = "cpufreq"
+
+# 热状态（perf-metrics-expansion 05）：dumpsys thermalservice 的状态行
+# （"Thermal status:" / "Current thermal status:" 两种形态都覆盖）；
+# 0 NONE – 6 SHUTDOWN，越界视为取错字段
+THERMAL_STATUS_RE = re.compile(r"thermal status:\s*(\d+)", re.IGNORECASE)
+THERMAL_STATUS_MAX = 6
+CPUFREQ_GLOB = "/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"
 
 # 降级原因（如实记录"哪一级拿不到"）
 REASON_KGSL_NOT_READABLE = "kgsl_not_readable"
@@ -67,6 +84,20 @@ REASON_KGSL_UNPARSEABLE = "kgsl_unparseable"
 REASON_PID_UNAVAILABLE = "pid_unavailable"
 REASON_PID_AMBIGUOUS = "pid_ambiguous"
 REASON_PROC_NOT_FOUND = "proc_not_found"
+REASON_FD_NOT_READABLE = "fd_not_readable"
+REASON_PKG_UNSAFE = "pkg_unsafe"
+
+# 内联 `$(pidof <pkg>)` 替换的包名白名单（防 shell 注入：只允许字母数字下划线点；
+# 含空格/分号/$ 等元字符的一律不采，如实降级）
+PKG_SAFE_RE = re.compile(r"[A-Za-z0-9_.]+")
+
+# /proc/<pid>/status 的线程数字段
+THREADS_RE = re.compile(r"^Threads:\s+(\d+)\s*$", re.MULTILINE)
+
+# fd 目录 ls 输出中的错误信号（权限/进程不存在）：命中即读不到，不伪造 0
+FD_ERROR_RE = re.compile(
+    r"permission denied|no such file|not a directory|cannot access", re.IGNORECASE
+)
 
 SOURCE_KGSL = "kgsl_gpubusy"
 SOURCE_DUMPSYS = "dumpsys_gpu"
@@ -132,6 +163,54 @@ def parse_pidof(stdout: str) -> int | None:
     """
     pids = [token for token in (stdout or "").split() if token.isdigit()]
     return int(pids[0]) if len(pids) == 1 else None
+
+
+def parse_thread_count(stdout: str) -> int | None:
+    """从 /proc/<pid>/status 取 Threads 字段；无该字段（读不到/格式异常）返回 None。"""
+    match = THREADS_RE.search(stdout or "")
+    return int(match.group(1)) if match else None
+
+
+def parse_fd_count(stdout: str) -> int | None:
+    """`ls -1 /proc/<pid>/fd` 输出计行数得 FD 数；读不到返回 None（不伪造 0）。
+
+    错误信号（Permission denied / No such file 等，stderr 已并入）→ None；
+    空段同样按读不到处理——活进程的 fd 目录不可能为空，空输出只能是命令没
+    读成（如 pidof 失败后的路径不存在），不是"0 个 fd"。
+    """
+    text = stdout or ""
+    if FD_ERROR_RE.search(text):
+        return None
+    lines = [line for line in text.splitlines() if line.strip()]
+    return len(lines) if lines else None
+
+
+def parse_thermal_status(stdout: str) -> int | None:
+    """dumpsys thermalservice 的热状态档（0 NONE–6 SHUTDOWN）；无状态行/越界 → None。
+
+    老版本 Android 没有该服务（输出为空或无状态行），如实降级；0 档是有效
+    读数（无热节流），不是"读不到"。
+    """
+    match = THERMAL_STATUS_RE.search(stdout or "")
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 0 <= value <= THERMAL_STATUS_MAX else None
+
+
+def parse_cpu_freq_max_mhz(stdout: str) -> float | None:
+    """各核 scaling_cur_freq（kHz）取最大换算 MHz；无可读正值返回 None。
+
+    sysfs 不可读（部分机型限制 shell 访问）时 cat 段为空 → None，如实降级。
+    """
+    values = []
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.isdigit():
+            khz = int(stripped)
+            if khz > 0:
+                values.append(khz)
+    return max(values) / 1000.0 if values else None
 
 
 def split_sections(stdout: str) -> dict[str, str]:
@@ -212,6 +291,8 @@ class SupplementPoller:
         collect_temperature: bool = True,
         collect_gpu: bool = True,
         collect_gpu_mem: bool = True,
+        collect_proc_stats: bool = True,
+        collect_thermal: bool = True,
         target_pkg: str | None = None,
         call_device: DeviceCaller | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -226,6 +307,8 @@ class SupplementPoller:
         self.collect_temperature = collect_temperature
         self.collect_gpu = collect_gpu
         self.collect_gpu_mem = collect_gpu_mem
+        self.collect_proc_stats = collect_proc_stats
+        self.collect_thermal = collect_thermal
         self.target_pkg = target_pkg
         self._call = call_device or default_call_device(adb_path)
         self._sleep = sleep
@@ -237,6 +320,10 @@ class SupplementPoller:
         self._stages: dict[str, list[str]] = {
             "gpu_util_pct": [],
             "gpu_mem_mb": [],
+            "app_thread_count": [],
+            "app_fd_count": [],
+            "device_thermal_status": [],
+            "cpu_freq_max_mhz": [],
         }
 
     @property
@@ -257,8 +344,28 @@ class SupplementPoller:
             args += [";", "echo", f"{SECTION_MARKER}:{BATTERY_SECTION}", ";", "dumpsys", "battery"]
         if self.collect_gpu or self.collect_gpu_mem:
             args += [";", "echo", f"{SECTION_MARKER}:{GPU_SECTION}", ";", "dumpsys", "gpu"]
-        if self.collect_gpu_mem and self.target_pkg:
+        if (
+            (self.collect_gpu_mem or self.collect_proc_stats)
+            and self.target_pkg
+            and PKG_SAFE_RE.fullmatch(self.target_pkg)
+        ):
             args += [";", "echo", f"{SECTION_MARKER}:{PID_SECTION}", ";", "pidof", self.target_pkg]
+        if self.collect_proc_stats and self.target_pkg and PKG_SAFE_RE.fullmatch(self.target_pkg):
+            # pid 在设备侧内联解析（与 pidof 段同一轮）；包名已过白名单，
+            # 多 pid 时替换结果带空格 → 路径不存在 → 段为空 → 如实降级
+            args += [
+                ";", "echo", f"{SECTION_MARKER}:{PROC_STATUS_SECTION}",
+                ";", "cat", f"/proc/$(pidof {self.target_pkg})/status", "2>/dev/null",
+                ";", "echo", f"{SECTION_MARKER}:{PROC_FD_SECTION}",
+                ";", "ls", "-1", f"/proc/$(pidof {self.target_pkg})/fd", "2>&1",
+            ]
+        if self.collect_thermal:
+            args += [
+                ";", "echo", f"{SECTION_MARKER}:{THERMAL_SECTION}",
+                ";", "dumpsys", "thermalservice",
+                ";", "echo", f"{SECTION_MARKER}:{CPUFREQ_SECTION}",
+                ";", "cat", CPUFREQ_GLOB, "2>/dev/null",
+            ]
         return args
 
     def start(self) -> None:
@@ -306,6 +413,12 @@ class SupplementPoller:
             else self._now() - self._start_wall  # date 不可读时退回宿主侧计时
         )
         gpu_util, gpu_source = self._read_gpu_util(sections) if self.collect_gpu else (None, None)
+        thread_count, fd_count = (
+            self._read_proc_stats(sections) if self.collect_proc_stats else (None, None)
+        )
+        thermal_status, cpu_freq_mhz = (
+            self._read_thermal(sections) if self.collect_thermal else (None, None)
+        )
         self._result.samples.append(
             {
                 "elapsed_s": round(elapsed, 3),
@@ -318,6 +431,10 @@ class SupplementPoller:
                 "gpu_util_pct": gpu_util,
                 "gpu_util_source": gpu_source,
                 "gpu_mem_mb": self._read_gpu_mem(sections) if self.collect_gpu_mem else None,
+                "app_thread_count": thread_count,
+                "app_fd_count": fd_count,
+                "device_thermal_status": thermal_status,
+                "cpu_freq_max_mhz": cpu_freq_mhz,
             }
         )
 
@@ -353,6 +470,53 @@ class SupplementPoller:
             self._note_stage("gpu_mem_mb", REASON_PROC_NOT_FOUND)
         return value
 
+    def _read_proc_stats(self, sections: dict[str, str]) -> tuple[int | None, int | None]:
+        """线程数/FD 数（perf-metrics-expansion 04）：pid 唯一才采，读不到如实降级。
+
+        与显存同一 pid 口径（pidof 恰好一个）；status/fd 段由设备侧内联
+        `$(pidof)` 产出，host 侧再用 pidof 段判定归属——多 pid/缺 pid 时两段
+        内容本就不可信，直接降级不解析。
+        """
+        keys = ("app_thread_count", "app_fd_count")
+        if not self.target_pkg:
+            for key in keys:
+                self._note_stage(key, REASON_PID_UNAVAILABLE)
+            return None, None
+        if not PKG_SAFE_RE.fullmatch(self.target_pkg):
+            for key in keys:
+                self._note_stage(key, REASON_PKG_UNSAFE)
+            return None, None
+        pid_stdout = sections.get(PID_SECTION, "")
+        if parse_pidof(pid_stdout) is None:
+            reason = REASON_PID_AMBIGUOUS if pid_stdout.split() else REASON_PID_UNAVAILABLE
+            for key in keys:
+                self._note_stage(key, reason)
+            return None, None
+        threads = parse_thread_count(sections.get(PROC_STATUS_SECTION, ""))
+        if threads is None:
+            self._note_stage("app_thread_count", REASON_PROC_NOT_FOUND)
+        fds = parse_fd_count(sections.get(PROC_FD_SECTION, ""))
+        if fds is None:
+            self._note_stage("app_fd_count", REASON_FD_NOT_READABLE)
+        return threads, fds
+
+    def _read_thermal(self, sections: dict[str, str]) -> tuple[int | None, float | None]:
+        """热状态档/CPU 最大当前频率（perf-metrics-expansion 05）：只记录不判定。
+
+        热状态是性能可比性的混杂因子（阈值归宿主）；老版本无 thermalservice、
+        部分机型 sysfs 不可读，逐级留痕如实降级。
+        """
+        thermal_stdout = sections.get(THERMAL_SECTION, "")
+        status = parse_thermal_status(thermal_stdout)
+        if status is None:
+            self._note_stage("device_thermal_status", "thermalservice:unparseable_or_unsupported")
+        freq_stdout = sections.get(CPUFREQ_SECTION, "")
+        freq = parse_cpu_freq_max_mhz(freq_stdout)
+        if freq is None:
+            stage = "cpufreq:not_readable" if not freq_stdout.strip() else "cpufreq:unparseable"
+            self._note_stage("cpu_freq_max_mhz", stage)
+        return status, freq
+
     def _note_stage(self, key: str, stage: str) -> None:
         stages = self._stages.setdefault(key, [])
         if stage not in stages:
@@ -377,6 +541,10 @@ class SupplementPoller:
             (self.collect_temperature, "temp_battery_c"),
             (self.collect_gpu, "gpu_util_pct"),
             (self.collect_gpu_mem, "gpu_mem_mb"),
+            (self.collect_proc_stats, "app_thread_count"),
+            (self.collect_proc_stats, "app_fd_count"),
+            (self.collect_thermal, "device_thermal_status"),
+            (self.collect_thermal, "cpu_freq_max_mhz"),
         ):
             if not enabled:
                 continue
@@ -398,7 +566,10 @@ class SupplementPoller:
 
 # ---------- 入库前整理：样本落盘与聚合（与 collector 聚合行同形状） ----------
 
-SAMPLE_KEYS = ("temp_battery_c", "gpu_util_pct", "gpu_mem_mb")
+SAMPLE_KEYS = (
+    "temp_battery_c", "gpu_util_pct", "gpu_mem_mb", "app_thread_count", "app_fd_count",
+    "device_thermal_status", "cpu_freq_max_mhz",
+)
 
 
 def write_supplement_csv(path: str | Path, samples: list[dict[str, Any]]) -> Path:

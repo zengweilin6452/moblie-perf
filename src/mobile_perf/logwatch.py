@@ -21,12 +21,20 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from . import metrics as metrics_module
+
 STACK_MAX_LINES = 60
 STACK_DETAIL_MAX = 30
 CRASH_DEDUPE_WINDOW_S = 10.0
 
 CRASH_SOURCE_MAIN = "logcat_main"
 CRASH_SOURCE_EVENTS = "logcat_events"
+
+# 会话级稳定性计数（perf-metrics-expansion 03）：只计 detail.package 归属目标包
+# 的事件；未归属（package=None）事件留时间轴人工判读，单独计数落 meta，
+# 不进 app 计数（不猜归属）。监听不可用时由编排层标 not_tested，不伪造 0。
+METRIC_CRASH_COUNT = "app_crash_count"
+METRIC_ANR_COUNT = "app_anr_count"
 
 _EPOCH_LINE_RE = re.compile(
     r"^\s*(\d{9,13}\.\d{1,3})\s+(\d+)\s+(\d+)\s+([VDIWEF])\s+(\S+?):\s(.*)$"
@@ -179,6 +187,34 @@ def merge_duplicates(
         stack.extend(line for line in (other.get("stack") or []) if line not in stack)
         keep["stack"] = stack
     return merged
+
+
+def count_events(events: list[dict[str, Any]], target_pkg: str) -> dict[str, int]:
+    """按 kind 计数目标包事件（perf-metrics-expansion 03）。
+
+    只计 ``detail.package == target_pkg`` 的事件；``package=None`` 的未归属事件
+    单独计入 ``unattributed``（留时间轴人工判读，不猜归属、不进 app 计数）；
+    其他包名的事件（过滤后理论上不存在）同样不计入。
+    """
+    counts = {"crash": 0, "anr": 0, "unattributed": 0}
+    for event in events:
+        kind = event.get("kind")
+        if kind not in ("crash", "anr"):
+            continue
+        package = (event.get("detail") or {}).get("package")
+        if package is None:
+            counts["unattributed"] += 1
+        elif package == target_pkg:
+            counts[kind] += 1
+    return counts
+
+
+def aggregate_rows(counts: dict[str, int]) -> list[dict[str, Any]]:
+    """计数 → 会话级单样本聚合行（0 是有效结论：监听正常且零事件）。"""
+    return [
+        metrics_module.aggregate_row(METRIC_CRASH_COUNT, [float(counts["crash"])]),
+        metrics_module.aggregate_row(METRIC_ANR_COUNT, [float(counts["anr"])]),
+    ]
 
 
 def _host_epoch_to_iso(epoch_s: float) -> str:

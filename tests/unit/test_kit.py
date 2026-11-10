@@ -691,6 +691,7 @@ def test_kit_defaults_to_file_lock_gate(tmp_path):
 # ---- supplement 接线：采集期间旁路补采，stop 后合并入库（票 10） ----
 
 # 段标记格式（工单 16）：kgsl 窗口计数器 / dumpsys battery / dumpsys gpu / pidof
+# perf-metrics-expansion 04 起含 /proc 线程/FD 段（健康设备可读）
 SUPPLEMENT_STDOUT = (
     "1792895592\n"
     "__mp_section__:gpubusy\n"
@@ -702,6 +703,14 @@ SUPPLEMENT_STDOUT = (
     "Proc 4242 total: 131457024\n"
     "__mp_section__:pid\n"
     "4242\n"
+    "__mp_section__:procstatus\n"
+    "Name:\ttv.danmaku.bili\nThreads:\t42\n"
+    "__mp_section__:procfd\n"
+    "0\n1\n2\n157\n"
+    "__mp_section__:thermal\n"
+    "Thermal status: 0\n"
+    "__mp_section__:cpufreq\n"
+    "1800000\n2400000\n"
 )
 
 
@@ -772,7 +781,10 @@ class TestRunCollectSupplement:
         )
         assert meta["supplement"]["errors"] == meta["supplement"]["rounds"]
         keys = {entry["key"] for entry in meta["supplement"]["degraded"]}
-        assert keys == {"temp_battery_c", "gpu_util_pct", "gpu_mem_mb"}
+        assert keys == {
+            "temp_battery_c", "gpu_util_pct", "gpu_mem_mb", "app_thread_count", "app_fd_count",
+            "device_thermal_status", "cpu_freq_max_mhz",
+        }
 
         events = store.fetch_events("run-supplement-1")
         assert any(event["kind"] == "supplement_degraded" for event in events)

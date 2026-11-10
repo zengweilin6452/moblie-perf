@@ -128,11 +128,31 @@ METRICS: dict[str, MetricSpec] = {
         ),
         # 真机样本中无电量%列：保留 canonical key，映射待上游确认后补入
         MetricSpec("battery_pct", "%", "solo_pi", "电量", "Battery level"),
+        # 场景耗电量（perf-metrics-expansion 01）：实时电流时序梯形积分，
+        # 只计放电段（真机放电为负）；同源派生统计，无 SoloPi 原始列（见 battery.py）
+        MetricSpec(
+            "battery_consumed_mah", "mAh", "solo_pi",
+            "场景耗电量", "Energy consumed",
+        ),
         MetricSpec("temp_battery_c", "°C", "pc_supplement", "电池温度", "Battery temperature"),
         # GPU 双源（工单 16）：利用率优先 kgsl gpubusy（窗口平均，非瞬时），
         # 退化到 dumpsys gpu 文本；显存取 dumpsys gpu 的 Proc <pid> total
         MetricSpec("gpu_util_pct", "%", "pc_supplement", "GPU占用", "GPU utilization"),
         MetricSpec("gpu_mem_mb", "MB", "pc_supplement", "应用GPU显存", "App GPU memory"),
+        # 线程/FD（perf-metrics-expansion 04）：/proc/<pid>/status 与 fd 目录，
+        # 与 PSS 斜率组成泄漏三件套；pid 唯一才采，读不到降级不伪造 0
+        MetricSpec("app_thread_count", "个", "pc_supplement", "应用线程数", "App thread count"),
+        MetricSpec("app_fd_count", "个", "pc_supplement", "应用FD数", "App file descriptor count"),
+        # 热状态/降频（perf-metrics-expansion 05）：性能可比性的混杂因子，
+        # 只记录不判定（默认无阈值，阈值归宿主）；0 档/低频是有效读数
+        MetricSpec(
+            "device_thermal_status", "级", "pc_supplement",
+            "设备热状态档", "Device thermal status",
+        ),
+        MetricSpec(
+            "cpu_freq_max_mhz", "MHz", "pc_supplement",
+            "CPU当前最大频率", "Max current CPU frequency",
+        ),
         # 启动编排指标（ticket 12）：采集窗口内 force-stop/退后台后 am start -W
         # 计得，单样本入库（聚合字段填单值）；无 SoloPi 原始列
         MetricSpec("app_cold_start_ms", "ms", "pc_orchestration", "冷启动耗时", "Cold start time"),
@@ -175,6 +195,16 @@ METRICS: dict[str, MetricSpec] = {
             "app_frame_count", "帧", "pc_supplement",
             "采样帧数", "Sampled frame count",
         ),
+        # 帧级冻帧/连续段（perf-metrics-expansion 02）：逐帧口径派生，
+        # 冻帧 >700ms（Android vitals）；连续段按采样序列扫描（见 frameinfo.py）
+        MetricSpec(
+            "app_frame_frozen_ratio_pct", "%", "pc_supplement",
+            "冻帧占比(>700ms)", "Frozen frame ratio (>700ms)",
+        ),
+        MetricSpec(
+            "app_frame_jank_streak_max", "帧", "pc_supplement",
+            "最长连续超时帧段", "Max consecutive janky frames",
+        ),
         # 弱网直通档（ticket 17）：代理侧观察到的 TCP 流「建立→首字节」耗时。
         # 不解密，故无 URL/状态码；接口级明细归 ticket 18 的解密档
         MetricSpec(
@@ -200,6 +230,10 @@ METRICS: dict[str, MetricSpec] = {
             "page_load_ms", "ms", "pc_orchestration",
             "整页加载耗时", "Page load time",
         ),
+        # 稳定性计数（perf-metrics-expansion 03）：logwatch 事件按目标包归属
+        # 计数的会话级单样本；监听不可用时标 not_tested，不伪造 0（见 logwatch.py）
+        MetricSpec("app_crash_count", "次", "pc_supplement", "应用Crash次数", "App crash count"),
+        MetricSpec("app_anr_count", "次", "pc_supplement", "应用ANR次数", "App ANR count"),
         # 泄漏趋势斜率（ticket 13）：跨 run 回归产物，非采集指标、无 SoloPi 原始列；
         # 由 leak.analyze_leak_trend 计算，阈值判定归宿主（leak.leak_verdict）
         MetricSpec(

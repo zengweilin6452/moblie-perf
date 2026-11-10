@@ -98,6 +98,45 @@ def _read_metric_values(csv_path: Path) -> dict[str, list[float]]:
     return values
 
 
+def read_metric_series(csv_path: str | Path, metric_key: str) -> list[tuple[float, float]]:
+    """按 canonical key 读单个 CSV 的 (RecordTime 毫秒, 值) 时序。
+
+    与 _read_metric_values 同一表头映射/编码/数值解析口径；RecordTime 缺失或
+    不可解析的行跳过（没有时刻的样本无法参与时间积分）。返回按文件行序。
+    """
+    series: list[tuple[float, float]] = []
+    with Path(csv_path).open(encoding=CSV_ENCODING, newline="") as fh:
+        reader = csv.reader(fh)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return series
+        time_index: int | None = None
+        value_index: int | None = None
+        for index, name in enumerate(header):
+            name = name.strip()
+            if name == "RecordTime":
+                time_index = index
+                continue
+            if name in _NON_METRIC_COLUMNS:
+                continue
+            spec = metrics_module.column_to_metric(name)
+            if spec is not None and spec.key == metric_key:
+                value_index = index
+        if time_index is None or value_index is None:
+            return series
+        for row in reader:
+            if value_index >= len(row) or time_index >= len(row):
+                continue
+            try:
+                ts = float(row[time_index])
+                value = float(row[value_index])
+            except ValueError:
+                continue
+            series.append((ts, value))
+    return series
+
+
 def aggregate_artifacts(artifacts_dir: str | Path) -> list[dict[str, Any]]:
     """对 pull 产物做聚合：每个 canonical key 一行 min/median/mean/max/p90。
 

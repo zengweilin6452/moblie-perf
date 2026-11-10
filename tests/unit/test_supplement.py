@@ -198,6 +198,10 @@ def combined_output(
     gpubusy=None,
     gpu_proc=None,
     pids=None,
+    proc_status=None,
+    proc_fd=None,
+    thermal=None,
+    cpufreq=None,
     *,
     with_markers=True,
 ):
@@ -237,6 +241,14 @@ def combined_output(
         lines += [f"{supplement.SECTION_MARKER}:{supplement.GPU_SECTION}", *gpu_lines]
     if pids is not None:
         lines += [f"{supplement.SECTION_MARKER}:{supplement.PID_SECTION}", pids]
+    if proc_status is not None:
+        lines += [f"{supplement.SECTION_MARKER}:{supplement.PROC_STATUS_SECTION}", proc_status]
+    if proc_fd is not None:
+        lines += [f"{supplement.SECTION_MARKER}:{supplement.PROC_FD_SECTION}", proc_fd]
+    if thermal is not None:
+        lines += [f"{supplement.SECTION_MARKER}:{supplement.THERMAL_SECTION}", thermal]
+    if cpufreq is not None:
+        lines += [f"{supplement.SECTION_MARKER}:{supplement.CPUFREQ_SECTION}", cpufreq]
     return "\n".join(lines) + "\n"
 
 
@@ -250,6 +262,9 @@ def make_poller(fake_call, **kwargs):
     kwargs.setdefault("now", lambda: 1000.0)
     # 默认不采显存：多数用例只关心温度/利用率，显存单列一组用例
     kwargs.setdefault("collect_gpu_mem", False)
+    # 默认不采线程/FD（04）与热状态（05）：各有专组用例显式开启
+    kwargs.setdefault("collect_proc_stats", False)
+    kwargs.setdefault("collect_thermal", False)
     return supplement.SupplementPoller(**kwargs)
 
 
@@ -499,9 +514,10 @@ class TestWriteSupplementCsv:
         path = supplement.write_supplement_csv(tmp_path / "supplement_thermal_gpu.csv", samples)
         lines = path.read_text(encoding="utf-8").strip().splitlines()
         assert lines == [
-            "elapsed_s,temp_battery_c,gpu_util_pct,gpu_mem_mb",
-            "0.0,28.0,,",
-            "2.0,28.1,40.0,125.4",
+            "elapsed_s,temp_battery_c,gpu_util_pct,gpu_mem_mb,app_thread_count,app_fd_count,"
+            "device_thermal_status,cpu_freq_max_mhz",
+            "0.0,28.0,,,,,,",
+            "2.0,28.1,40.0,125.4,,,,",
         ]
 
 
@@ -537,3 +553,230 @@ class TestAggregateSamples:
 
     def test_empty_samples_give_no_rows(self):
         assert supplement.aggregate_samples([]) == []
+
+
+class TestParseProcStats:
+    """线程数/FD 数解析（04）：读不到返回 None，不伪造 0。"""
+
+    def test_thread_count_from_status(self):
+        stdout = "Name:\tcom.demo\nState:\tS (sleeping)\nThreads:\t42\nSigQ:\t0/31071\n"
+        assert supplement.parse_thread_count(stdout) == 42
+
+    def test_thread_count_missing_field_returns_none(self):
+        assert supplement.parse_thread_count("Name:\tcom.demo\n") is None
+        assert supplement.parse_thread_count("") is None
+
+    def test_fd_count_counts_non_empty_lines(self):
+        assert supplement.parse_fd_count("0\n1\n2\n157\n") == 4
+
+    def test_fd_permission_denied_returns_none_not_zero(self):
+        # 权限不足时 ls 报错（stderr 已并入）：读不到 ≠ 0 个 fd
+        assert supplement.parse_fd_count("ls: /proc/999/fd: Permission denied\n") is None
+
+    def test_fd_missing_process_returns_none(self):
+        assert supplement.parse_fd_count("ls: /proc/999/fd: No such file or directory\n") is None
+
+    def test_fd_empty_section_returns_none_not_zero(self):
+        # 活进程 fd 目录不可能为空；空段只能是没读成，不是 0
+        assert supplement.parse_fd_count("") is None
+        assert supplement.parse_fd_count("\n \n") is None
+
+
+class TestSupplementPollerProcStats:
+    """线程/FD 轮询（04）：pid 唯一才采，降级逐级留痕，命令不越权。"""
+
+    def _run(self, outputs, **kwargs):
+        call = FakeCallDevice(outputs)
+        kwargs.setdefault("collect_proc_stats", True)
+        kwargs.setdefault("target_pkg", "com.demo")
+        poller = make_poller(call, **kwargs)
+        poller.start()
+        assert wait_until(lambda: poller.rounds >= 1)
+        return poller.stop(), call
+
+    def test_reads_thread_and_fd_counts(self):
+        result, _ = self._run(
+            [
+                combined_output(
+                    999, temperature=280, gpubusy="0 0", pids="23286\n",
+                    proc_status="Name:\tcom.demo\nThreads:\t42\n",
+                    proc_fd="0\n1\n2\n157\n",
+                )
+            ]
+        )
+        assert result.samples[0]["app_thread_count"] == 42
+        assert result.samples[0]["app_fd_count"] == 4
+        assert result.degraded == []
+
+    def test_ambiguous_pid_degrades_both_without_guessing(self):
+        result, _ = self._run(
+            [
+                combined_output(
+                    999, gpubusy="0 0", pids="23286 23300\n",
+                    proc_status="Threads:\t42\n", proc_fd="0\n1\n",
+                )
+            ]
+        )
+        assert result.samples[0]["app_thread_count"] is None
+        assert result.samples[0]["app_fd_count"] is None
+        for key in ("app_thread_count", "app_fd_count"):
+            entry = next(item for item in result.degraded if item["key"] == key)
+            assert entry["stages"] == [supplement.REASON_PID_AMBIGUOUS]
+
+    def test_fd_permission_denied_degrades_only_fd(self):
+        result, _ = self._run(
+            [
+                combined_output(
+                    999, gpubusy="0 0", pids="23286\n",
+                    proc_status="Threads:\t42\n",
+                    proc_fd="ls: /proc/23286/fd: Permission denied\n",
+                )
+            ]
+        )
+        assert result.samples[0]["app_thread_count"] == 42
+        assert result.samples[0]["app_fd_count"] is None
+        entry = next(item for item in result.degraded if item["key"] == "app_fd_count")
+        assert entry["stages"] == [supplement.REASON_FD_NOT_READABLE]
+        assert not any(item["key"] == "app_thread_count" for item in result.degraded)
+
+    def test_unsafe_package_name_is_not_executed(self):
+        # 包名带 shell 元字符：不内联进命令，如实降级（防注入）
+        result, call = self._run(
+            [combined_output(999, gpubusy="0 0")], target_pkg="com.demo;rm -rf /"
+        )
+        assert result.samples[0]["app_thread_count"] is None
+        entry = next(item for item in result.degraded if item["key"] == "app_thread_count")
+        assert entry["stages"] == [supplement.REASON_PKG_UNSAFE]
+        assert not any("$(pidof" in arg for arg in call.calls[0])
+        assert "pidof" not in call.calls[0]
+
+    def test_round_args_include_proc_sections_for_safe_package(self):
+        poller = make_poller(
+            FakeCallDevice([]), collect_proc_stats=True, target_pkg="com.demo"
+        )
+        args = poller._round_args()
+        assert "pidof" in args and "com.demo" in args
+        assert "/proc/$(pidof com.demo)/status" in args
+        assert "/proc/$(pidof com.demo)/fd" in args
+
+    def test_disabled_proc_stats_not_polled_not_degraded(self):
+        call = FakeCallDevice([combined_output(999, temperature=280, gpubusy="0 0")])
+        poller = make_poller(call, collect_proc_stats=False)
+        poller.start()
+        assert wait_until(lambda: poller.rounds == 1)
+        result = poller.stop()
+        assert result.samples[0]["app_thread_count"] is None
+        assert result.degraded == []
+        assert not any("$(pidof" in arg for arg in call.calls[0])
+
+    def test_proc_samples_aggregate_to_rows(self):
+        samples = [
+            {"elapsed_s": 0.0, "app_thread_count": 40, "app_fd_count": 100},
+            {"elapsed_s": 2.0, "app_thread_count": 44, "app_fd_count": 120},
+        ]
+        rows = supplement.aggregate_samples(samples)
+        by_key = {row["metric_key"]: row for row in rows}
+        assert by_key["app_thread_count"]["median"] == 42.0
+        assert by_key["app_fd_count"]["median"] == 110.0
+        assert by_key["app_thread_count"]["source"] == "pc_supplement"
+
+
+class TestParseThermal:
+    """热状态/频率解析（05）：0 档有效，越界/垃圾/不可读 → None。"""
+
+    def test_parses_thermal_status_line(self):
+        stdout = "Is thermal shutdown imminent: false\nThermal status: 2\n"
+        assert supplement.parse_thermal_status(stdout) == 2
+
+    def test_parses_current_thermal_status_variant(self):
+        assert supplement.parse_thermal_status("Current thermal status: 0\n") == 0
+
+    def test_zero_status_is_valid_not_missing(self):
+        # 0 = 无热节流，是有效读数（与 gpubusy 0 0 同哲学）
+        assert supplement.parse_thermal_status("Thermal status: 0\n") == 0
+
+    def test_out_of_range_status_returns_none(self):
+        assert supplement.parse_thermal_status("Thermal status: 7\n") is None
+
+    def test_missing_or_garbage_output_returns_none(self):
+        assert supplement.parse_thermal_status("") is None
+        assert supplement.parse_thermal_status("Can't find service: thermalservice\n") is None
+
+    def test_cpu_freq_takes_max_across_cores_in_mhz(self):
+        assert supplement.parse_cpu_freq_max_mhz("1800000\n2400000\n300000\n") == 2400.0
+
+    def test_cpu_freq_empty_or_nonpositive_returns_none(self):
+        assert supplement.parse_cpu_freq_max_mhz("") is None
+        assert supplement.parse_cpu_freq_max_mhz("0\n0\n") is None
+        assert supplement.parse_cpu_freq_max_mhz("cat: *: No such file\n") is None
+
+
+class TestSupplementPollerThermal:
+    """热状态轮询（05）：默认关（make_poller），显式开后采样/降级留痕。"""
+
+    def _run(self, outputs, **kwargs):
+        call = FakeCallDevice(outputs)
+        kwargs.setdefault("collect_thermal", True)
+        poller = make_poller(call, **kwargs)
+        poller.start()
+        assert wait_until(lambda: poller.rounds >= 1)
+        return poller.stop(), call
+
+    def test_reads_thermal_status_and_max_freq(self):
+        result, _ = self._run(
+            [
+                combined_output(
+                    999, temperature=280, gpubusy="0 0",
+                    thermal="Thermal status: 1\n", cpufreq="1800000\n2400000\n",
+                )
+            ]
+        )
+        assert result.samples[0]["device_thermal_status"] == 1
+        assert result.samples[0]["cpu_freq_max_mhz"] == 2400.0
+        assert result.degraded == []
+
+    def test_unsupported_thermal_service_degrades_with_stage(self):
+        # 老版本无 thermalservice：段为空 → 降级留痕；cpufreq 仍可读
+        result, _ = self._run(
+            [combined_output(999, temperature=280, gpubusy="0 0", thermal="", cpufreq="1800000\n")]
+        )
+        assert result.samples[0]["device_thermal_status"] is None
+        assert result.samples[0]["cpu_freq_max_mhz"] == 1800.0
+        entry = next(item for item in result.degraded if item["key"] == "device_thermal_status")
+        assert entry["stages"] == ["thermalservice:unparseable_or_unsupported"]
+        assert not any(item["key"] == "cpu_freq_max_mhz" for item in result.degraded)
+
+    def test_unreadable_cpufreq_degrades_with_not_readable_stage(self):
+        result, _ = self._run(
+            [combined_output(999, temperature=280, gpubusy="0 0", thermal="Thermal status: 0\n")]
+        )
+        assert result.samples[0]["cpu_freq_max_mhz"] is None
+        entry = next(item for item in result.degraded if item["key"] == "cpu_freq_max_mhz")
+        assert entry["stages"] == ["cpufreq:not_readable"]
+
+    def test_round_args_include_thermal_commands(self):
+        poller = make_poller(FakeCallDevice([]), collect_thermal=True)
+        args = poller._round_args()
+        assert "thermalservice" in args
+        assert supplement.CPUFREQ_GLOB in args
+
+    def test_disabled_thermal_not_polled_not_degraded(self):
+        call = FakeCallDevice([combined_output(999, temperature=280, gpubusy="0 0")])
+        poller = make_poller(call, collect_thermal=False)
+        poller.start()
+        assert wait_until(lambda: poller.rounds == 1)
+        result = poller.stop()
+        assert result.samples[0]["device_thermal_status"] is None
+        assert result.degraded == []
+        assert "thermalservice" not in call.calls[0]
+
+    def test_thermal_samples_aggregate_to_rows(self):
+        samples = [
+            {"elapsed_s": 0.0, "device_thermal_status": 0, "cpu_freq_max_mhz": 2400.0},
+            {"elapsed_s": 2.0, "device_thermal_status": 2, "cpu_freq_max_mhz": 1800.0},
+        ]
+        rows = supplement.aggregate_samples(samples)
+        by_key = {row["metric_key"]: row for row in rows}
+        assert by_key["device_thermal_status"]["max"] == 2.0
+        assert by_key["cpu_freq_max_mhz"]["median"] == 2100.0
+        assert by_key["device_thermal_status"]["unit"] == "级"
