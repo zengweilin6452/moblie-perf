@@ -13,7 +13,7 @@
 - **逐帧与整页**：gfxinfo framestats 逐帧 P50/P90/P99（工单 15）、页面打标到画面视觉稳定的整页加载耗时 `page_load_ms`（工单 19）；
 - **弱网剖面**：none/4g/3g/weak/custom 档位（mitmproxy 子进程，可选依赖），直通档连接建立耗时、解密档接口级指标与瀑布图；网络档位作为与设备档案并列的可比性维度（趋势跨档默认拒绝、基线档位不匹配 → not_tested）；弱网整形只作用于 CONNECT 隧道（明文 HTTP 不整形，但 HAR 抓包仍会记录），要测首屏须在采集窗口内冷启动 App——窗口外起 App 首屏请求已直连发完，档位等于没生效；
 - **APP 抓包（默认关）**：`--capture-har` 在采集窗口内经同一 mitmproxy 子进程把可观察的 HTTP 请求/响应按 **HAR 1.2** 落到 `runs/<runId>/network/app.har`；默认脱敏、默认只记正文元数据（size + MIME + sha256），与弱网档位正交（单独开启时不写 `sessions.net_profile`）；明文 HTTP 无需 App 信任代理 CA，证书拒绝时只产仅含真实明文请求的 `partial` HAR，不把 CONNECT 伪装成请求；
-- **报告**：每 run 双产物——单文件 HTML（内嵌离线 ECharts，断网可看）+ 同内容 JSON；
+- **报告**：每 run 双产物——单文件 HTML（内嵌离线 ECharts，断网可看）+ 同内容 JSON；开启抓包时报告网络剖面增加 `network.har` 摘要与相对链接；
 - **设备准入**：DeviceGate 短事务协议，与宿主 UI 自动化的整生命周期租约互不阻塞（录制期间不持锁）。
 
 ## 安装
@@ -48,6 +48,9 @@ mobile-perf trend tv.danmaku.bili --metric mem_pss_mb
 mobile-perf trend tv.danmaku.bili --metric mem_pss_mb --net-profile weak
 mobile-perf leak com.sinosoft.trainapp --profile Xiaomi-2206123SC-Android14 --slope-threshold 2.0
 ```
+
+抓包验收（不安装 CA、双路径检查）与 `report.html` 查看步骤见
+[docs/app-har-capture-acceptance.md](docs/app-har-capture-acceptance.md)。
 
 ### 库 API
 

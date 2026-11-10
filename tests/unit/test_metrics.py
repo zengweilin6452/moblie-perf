@@ -55,6 +55,16 @@ def test_dictionary_contains_design_v03_plus_calibrated_keys():
         "page_load_ms",
         # 泄漏趋势斜率（ticket 13，source=analysis，跨 run 回归产物）
         "mem_pss_slope_mb_per_day",
+        # 指标扩充 A+（perf-metrics-expansion）
+        "battery_consumed_mah",
+        "app_frame_frozen_ratio_pct",
+        "app_frame_jank_streak_max",
+        "app_crash_count",
+        "app_anr_count",
+        "app_thread_count",
+        "app_fd_count",
+        "device_thermal_status",
+        "cpu_freq_max_mhz",
     }
 
     assert set(metrics.METRICS) == expected
@@ -149,6 +159,7 @@ def test_degraded_metric_keys_maps_charging_items_to_canonical_keys():
         "battery_current_avg_ma",
         "battery_power_mw",
         "battery_power_avg_mw",
+        "battery_consumed_mah",
         "temp_battery_c",
     }
     assert metrics.degraded_metric_keys(()) == set()
@@ -158,4 +169,5 @@ def test_degraded_metric_keys_maps_charging_items_to_canonical_keys():
         "battery_current_avg_ma",
         "battery_power_mw",
         "battery_power_avg_mw",
+        "battery_consumed_mah",
     }

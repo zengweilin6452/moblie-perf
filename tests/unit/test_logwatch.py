@@ -11,7 +11,9 @@ import pytest
 from mobile_perf.logwatch import (
     LogcatParser,
     LogWatch,
+    aggregate_rows,
     convert_ts,
+    count_events,
     filter_by_packages,
     merge_duplicates,
 )
@@ -338,3 +340,43 @@ class TestBufferCutoff:
         watch.stop()
 
         assert "-T" in spawned[0] and spawned[0][spawned[0].index("-T") + 1] == "1"
+
+
+class TestCountEvents:
+    """稳定性计数（perf-metrics-expansion 03）：只计归属目标包，未归属单独计。"""
+
+    @staticmethod
+    def _event(kind: str, package: str | None) -> dict:
+        return {"kind": kind, "ts": None, "detail": {"package": package}}
+
+    def test_counts_only_target_package_events(self):
+        events = [
+            self._event("crash", "tv.danmaku.bili"),
+            self._event("crash", "tv.danmaku.bili"),
+            self._event("anr", "tv.danmaku.bili"),
+            self._event("crash", "com.other.app"),
+        ]
+        counts = count_events(events, "tv.danmaku.bili")
+        assert counts == {"crash": 2, "anr": 1, "unattributed": 0}
+
+    def test_unattributed_events_counted_separately_not_as_app_crash(self):
+        # 包名识别不出的事件不猜归属：进 unattributed，不进 app 计数
+        events = [self._event("crash", None), self._event("anr", None)]
+        counts = count_events(events, "tv.danmaku.bili")
+        assert counts == {"crash": 0, "anr": 0, "unattributed": 2}
+
+    def test_zero_events_is_valid_zero_counts(self):
+        assert count_events([], "tv.danmaku.bili") == {"crash": 0, "anr": 0, "unattributed": 0}
+
+    def test_non_crash_anr_kinds_are_ignored(self):
+        events = [{"kind": "mark", "detail": {"package": "tv.danmaku.bili"}}]
+        assert count_events(events, "tv.danmaku.bili") == {"crash": 0, "anr": 0, "unattributed": 0}
+
+    def test_aggregate_rows_are_session_single_sample(self):
+        rows = aggregate_rows({"crash": 2, "anr": 1, "unattributed": 0})
+        by_key = {row["metric_key"]: row for row in rows}
+        assert by_key["app_crash_count"]["median"] == 2.0
+        assert by_key["app_anr_count"]["median"] == 1.0
+        assert by_key["app_crash_count"]["sample_count"] == 1
+        assert by_key["app_crash_count"]["source"] == "pc_supplement"
+        assert by_key["app_crash_count"]["unit"] == "次"

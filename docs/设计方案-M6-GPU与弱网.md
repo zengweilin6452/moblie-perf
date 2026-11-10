@@ -369,6 +369,26 @@ mobile_perf
 - 验收过程中修正两条**口径前提**（已写入嵌入指南 §3.2）：
   1. 要测首屏，App 必须在**采集窗口内**冷启动——窗口外起 App，首屏请求在代理
      施加前已直连发完，代理侧 0 连接，`applied=true` 但 `effective=false`；
-  2. 代理**只整形 CONNECT 隧道**，明文 HTTP 不在 addon 范围。
+  2. **弱网整形只作用于 CONNECT 隧道**，明文 HTTP 不做延迟/带宽整形；
+     后续 APP 抓包（HAR）会记录明文 HTTP，见 §13。
 - 3 仍缺：本机 `targetSdk 36` 的 App 不信任用户 CA，接口级指标走的是
   `not_tested` 降级路径（已验收该路径），有值路径待满足前置条件的组合。
+
+---
+
+## 13. 后续增量（非 M6 范围）：APP 抓包（HAR）
+
+APP 抓包是在 M6 网络编排之后追加的独立能力，**不属于 M6 原验收范围**；
+实现复用同一个 mitmproxy 子进程，但不改变 `net_conn_duration_ms` /
+`api_*` 的指标口径，也不改变 M6 的网络档位可比性。
+
+- 开关默认关闭；`--capture-har` 产出 `runs/<runId>/network/app.har`（HAR 1.2）
+  与流式 `app.har.entries.jsonl`，报告增加 `network.har` 摘要与相对链接；
+- 默认脱敏、默认只记正文元数据；明文 HTTP 无需 App 信任代理 CA，证书拒绝时
+  只可能有真实明文请求的 `partial`，CONNECT 不写成请求；
+- 采用流式 JSONL + 停止时原子合成，不依赖 mitmproxy `hardump`（Windows
+  `terminate()` 不会触发其 `done()`）。
+
+设计与验收细节见 [ADR-0005](adr/0005-app-har-capture.md)、
+[嵌入指南 §3.3](嵌入指南.md#33-app-抓包har默认关) 与
+[真机验收与 HTML 报告](app-har-capture-acceptance.md)。

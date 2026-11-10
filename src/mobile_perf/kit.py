@@ -10,11 +10,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import battery as battery_module
 from . import collector, solo
 from . import frameinfo as frameinfo_module
 from . import jank as jank_module
 from . import judge as judge_module
 from . import leak as leak_module
+from . import logwatch as logwatch_module
 from . import metrics as metrics_module
 from . import netprof as netprof_module
 from . import pageflow as pageflow_module
@@ -445,6 +447,21 @@ class CollectScope:
         jank_aggregates = jank_module.aggregate_from_artifacts(
             self._artifacts_dir, self._jank_thresholds_ms
         )
+        # 场景耗电量（perf-metrics-expansion 01）：实时电流时序积分，只计放电段；
+        # 无 Battery 采集/样本不足时为空，由下方 not_tested 标注说明原因
+        battery_aggregates = battery_module.aggregate_from_artifacts(self._artifacts_dir)
+        # crash/ANR 会话计数（perf-metrics-expansion 03）：监听正常才出数
+        # （0 有效）；未启动/停止失败（None）→ 下方标 not_tested，不伪造 0
+        stability_counts = (
+            logwatch_module.count_events(watch_events, self.target)
+            if watch_events is not None
+            else None
+        )
+        stability_aggregates = (
+            logwatch_module.aggregate_rows(stability_counts)
+            if stability_counts is not None
+            else []
+        )
         # 逐帧口径（ticket 15）：framestats 的逐帧耗时统计；无帧（后台/零渲染）
         # 时为空，不硬造 0 值，如实降级为事件
         frame_aggregates: list[dict[str, Any]] = []
@@ -463,6 +480,9 @@ class CollectScope:
                 frame_meta["refreshHz"] = stats["refreshHz"]
                 frame_meta["jankMultiplier"] = frameinfo_module.JANK_MULTIPLIER
                 frame_meta["jankCount"] = stats["jankCount"]
+                frame_meta["frozenThresholdMs"] = frameinfo_module.FROZEN_FRAME_MS
+                frame_meta["frozenCount"] = stats["frozenCount"]
+                frame_meta["jankStreakMax"] = stats["jankStreakMax"]
                 frame_aggregates = frameinfo_module.aggregate_from_samples(
                     frame_result.samples
                 )
@@ -550,6 +570,8 @@ class CollectScope:
             aggregates
             + supplement_aggregates
             + jank_aggregates
+            + battery_aggregates
+            + stability_aggregates
             + frame_aggregates
             + page_aggregates
             + net_aggregates
@@ -594,6 +616,23 @@ class CollectScope:
                 )
         merged_aggregates += startup_aggregates
         metrics_summary = report_module.summarize_aggregates(merged_aggregates)
+        # 采了 Battery 却积不出耗电量（无电流列/样本不足）：如实 not_tested；
+        # 充电降级在下方 mark_not_tested 统一覆盖（battery_* 前缀）
+        if "Battery" in self.items and not battery_aggregates:
+            metrics_summary[battery_module.METRIC_KEY] = {
+                "notTested": True,
+                "notTestedReason": (
+                    "产物中无可用实时电流时序（未采到电流列，或样本 <2/有效时长为 0），"
+                    "无法积分耗电量"
+                ),
+            }
+        # 监听不可用（启动失败/停止异常）：稳定性计数如实 not_tested，不伪造 0
+        if stability_counts is None:
+            reason = "crash/ANR 监听不可用（启动失败或停止异常），计数缺失而非零事件"
+            if self._watch_warnings:
+                reason += f"：{self._watch_warnings[0].get('reason')}"
+            for key in (logwatch_module.METRIC_CRASH_COUNT, logwatch_module.METRIC_ANR_COUNT):
+                metrics_summary[key] = {"notTested": True, "notTestedReason": reason}
         # 充电降级（A1/§6.2）：巡检结论含 Battery/Temperature 降级项时，
         # 对应指标标注 not_tested（附原因），其余指标照常
         readiness = kit.last_readiness
@@ -662,6 +701,16 @@ class CollectScope:
             "pages": page_meta,
             "network": net_meta,
             "startup": startup_meta,
+            "logwatch": (
+                {
+                    "enabled": True,
+                    "crashCount": stability_counts["crash"],
+                    "anrCount": stability_counts["anr"],
+                    "unattributedCount": stability_counts["unattributed"],
+                }
+                if stability_counts is not None
+                else {"enabled": False}
+            ),
             "jank": (
                 {"thresholdsMs": dict(self._jank_thresholds_ms)}
                 if self._jank_thresholds_ms is not None
@@ -829,7 +878,7 @@ class CollectScope:
                     self._run_id, kind="capture_har", detail=dict(har_detail)
                 )
         # crash/ANR 事件入统一时间轴（ts 已由 logwatch 用 keeper 偏移换算）
-        for event in watch_events:
+        for event in watch_events or []:
             store.record_event(
                 self._run_id, kind=event["kind"], detail=event["detail"], ts=event["ts"]
             )
@@ -1717,11 +1766,16 @@ class PerfKit:
             warnings.append({"reason": str(exc)})
             return None
 
-    def _stop_crash_watch(self, watcher: Any | None) -> list[dict[str, Any]]:
+    def _stop_crash_watch(self, watcher: Any | None) -> list[dict[str, Any]] | None:
+        """停止监听并返回事件；未启动/停止失败返回 None（区别于正常零事件 []）。
+
+        None 与 [] 的区分是稳定性计数（perf-metrics-expansion 03）的判定前提：
+        监听不可用 → not_tested；监听正常但零事件 → 0 是有效结论。
+        """
         if watcher is None:
-            return []
+            return None
         try:
             return list(watcher.stop())
         except Exception:  # noqa: BLE001 - 停止失败不阻断采集闭环
             logger.exception("logwatch 停止异常")
-            return []
+            return None

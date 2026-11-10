@@ -182,3 +182,96 @@ def test_run_collect_survives_watcher_start_failure(tmp_path):
     kinds = [e["kind"] for e in store.fetch_events("run-watch-err")]
     assert "logwatch_warning" in kinds
     assert "crash" not in kinds
+
+
+def _anr_event(package="tv.danmaku.bili"):
+    return {
+        "kind": "anr",
+        "ts": CRASH_EVENT["ts"],
+        "detail": {**CRASH_EVENT["detail"], "package": package, "message": "ANR in app"},
+    }
+
+
+def test_run_collect_counts_target_crash_and_anr(tmp_path):
+    """稳定性计数（03）：目标包 2 crash + 1 anr + 1 未归属 → 2/1，未归属落 meta。"""
+    unattributed = {
+        "kind": "crash",
+        "ts": CRASH_EVENT["ts"],
+        "detail": {**CRASH_EVENT["detail"], "package": None},
+    }
+    watcher = StubWatcher(events=[CRASH_EVENT, dict(CRASH_EVENT), _anr_event(), unattributed])
+    kit, _ = make_kit(tmp_path, logwatch_factory=lambda **kw: watcher)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        runs_dir=tmp_path / "runs",
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["app_crash_count"]["median"] == 2.0
+    assert summary["app_anr_count"]["median"] == 1.0
+    assert summary["app_crash_count"]["sampleCount"] == 1
+    assert report["logwatch"] == {
+        "enabled": True,
+        "crashCount": 2,
+        "anrCount": 1,
+        "unattributedCount": 1,
+    }
+
+
+def test_run_collect_zero_events_is_valid_zero_not_missing(tmp_path):
+    kit, _ = make_kit(tmp_path, logwatch_factory=lambda **kw: StubWatcher())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        runs_dir=tmp_path / "runs",
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["app_crash_count"]["median"] == 0.0
+    assert summary["app_anr_count"]["median"] == 0.0
+    assert not summary["app_crash_count"].get("notTested")
+    assert report["logwatch"]["enabled"] is True
+
+
+def test_run_collect_watcher_start_failure_marks_counts_not_tested(tmp_path):
+    watcher = StubWatcher(start_error=RuntimeError("adb not found"))
+    kit, _ = make_kit(tmp_path, logwatch_factory=lambda **kw: watcher)
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        runs_dir=tmp_path / "runs",
+    )
+
+    summary = report["metricsSummary"]
+    for key in ("app_crash_count", "app_anr_count"):
+        assert summary[key]["notTested"] is True
+        assert "adb not found" in summary[key]["notTestedReason"]
+        assert "median" not in summary[key]
+    assert report["logwatch"] == {"enabled": False}
+
+
+def test_run_collect_watcher_stop_failure_marks_counts_not_tested(tmp_path):
+    class StopFailsWatcher(StubWatcher):
+        def stop(self, timeout_s=5.0):
+            raise RuntimeError("logcat pipe broken")
+
+    kit, _ = make_kit(tmp_path, logwatch_factory=lambda **kw: StopFailsWatcher())
+
+    report = kit.run_collect(
+        target="tv.danmaku.bili",
+        items=["CPU"],
+        duration_s=30.0,
+        runs_dir=tmp_path / "runs",
+    )
+
+    summary = report["metricsSummary"]
+    assert summary["app_crash_count"]["notTested"] is True
+    assert summary["app_anr_count"]["notTested"] is True
+    assert report["logwatch"] == {"enabled": False}

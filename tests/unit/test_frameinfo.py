@@ -147,7 +147,7 @@ def test_frame_stats_without_any_interval_gives_no_jank_verdict():
     assert stats["count"] == 2
 
 
-def test_aggregate_from_samples_emits_five_rows():
+def test_aggregate_from_samples_emits_seven_rows():
     samples = [
         frameinfo.FrameSample("1", 8.0, 16.67),
         frameinfo.FrameSample("2", 40.0, 16.67),
@@ -162,6 +162,58 @@ def test_aggregate_from_samples_emits_five_rows():
     assert by_key[frameinfo.METRIC_COUNT]["sample_count"] == 1  # 会话级单样本
     assert by_key[frameinfo.METRIC_P50]["unit"] == "ms"
     assert by_key[frameinfo.METRIC_JANK_RATIO]["unit"] == "%"
+    assert by_key[frameinfo.METRIC_FROZEN_RATIO]["unit"] == "%"
+    assert by_key[frameinfo.METRIC_JANK_STREAK]["unit"] == "帧"
+    assert by_key[frameinfo.METRIC_JANK_STREAK]["median"] == 1.0  # 只有 40ms 一帧超时
+
+
+def test_frame_stats_frozen_ratio_and_max_streak():
+    # 60Hz（周期 16.67ms，超时判据 >25ms）：序列 8,40,800,900,10,30,800
+    # 冻帧（>700ms）3 个 → 3/7；最长连续超时段 = 40,800,900 共 3 帧
+    samples = [
+        frameinfo.FrameSample("1", 8.0, 16.67),
+        frameinfo.FrameSample("2", 40.0, 16.67),
+        frameinfo.FrameSample("3", 800.0, 16.67),
+        frameinfo.FrameSample("4", 900.0, 16.67),
+        frameinfo.FrameSample("5", 10.0, 16.67),
+        frameinfo.FrameSample("6", 30.0, 16.67),
+        frameinfo.FrameSample("7", 800.0, 16.67),
+    ]
+
+    stats = frameinfo.frame_stats(samples)
+
+    assert stats["frozenCount"] == 3
+    assert stats["frozenRatioPct"] == pytest.approx(300 / 7)
+    assert stats["jankStreakMax"] == 3
+
+
+def test_frame_stats_all_smooth_gives_zero_frozen_and_streak():
+    # 全正常帧：0 占比/0 段是有效结论，不是 None
+    samples = [frameinfo.FrameSample("1", 8.0, 16.67), frameinfo.FrameSample("2", 10.0, 16.67)]
+
+    stats = frameinfo.frame_stats(samples)
+
+    assert stats["frozenCount"] == 0
+    assert stats["frozenRatioPct"] == 0.0
+    assert stats["jankStreakMax"] == 0
+
+
+def test_frozen_threshold_is_strictly_greater():
+    # 恰好 700ms 不算冻帧（严格大于，与卡顿分级阈值语义一致）
+    samples = [frameinfo.FrameSample("1", 700.0, 16.67), frameinfo.FrameSample("2", 700.1, 16.67)]
+
+    assert frameinfo.frame_stats(samples)["frozenCount"] == 1
+
+
+def test_frozen_counts_without_interval_info():
+    # 缺周期信息时超时/连续段无从判定（为 0），但冻帧只看绝对耗时，照常计数
+    samples = [frameinfo.FrameSample("1", 800.0, None)]
+
+    stats = frameinfo.frame_stats(samples)
+
+    assert stats["frozenCount"] == 1
+    assert stats["jankCount"] == 0
+    assert stats["jankStreakMax"] == 0
 
 
 def test_aggregate_from_empty_samples_returns_no_rows():

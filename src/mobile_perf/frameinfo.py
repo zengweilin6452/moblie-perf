@@ -69,13 +69,22 @@ _MAX_INTERVAL_MS = 1000.0
 # 超时帧判据：帧耗时 > 刷新周期 × 该倍数（Android 侧 Janky 的常用近似）
 JANK_MULTIPLIER = 1.5
 
+# 冻帧判据（perf-metrics-expansion 02）：单帧耗时 >700ms（Android vitals 冻帧
+# 口径）。与工单 14 窗口级「严重卡顿」阈值同值但粒度不同，不可互算。
+FROZEN_FRAME_MS = 700.0
+
 # 入库 canonical key（metrics.METRICS 中登记）
 METRIC_P50 = "app_frame_p50_ms"
 METRIC_P90 = "app_frame_p90_ms"
 METRIC_P99 = "app_frame_p99_ms"
 METRIC_JANK_RATIO = "app_frame_jank_ratio_pct"
 METRIC_COUNT = "app_frame_count"
-STAT_METRIC_KEYS = (METRIC_P50, METRIC_P90, METRIC_P99, METRIC_JANK_RATIO, METRIC_COUNT)
+METRIC_FROZEN_RATIO = "app_frame_frozen_ratio_pct"
+METRIC_JANK_STREAK = "app_frame_jank_streak_max"
+STAT_METRIC_KEYS = (
+    METRIC_P50, METRIC_P90, METRIC_P99, METRIC_JANK_RATIO, METRIC_COUNT,
+    METRIC_FROZEN_RATIO, METRIC_JANK_STREAK,
+)
 
 DEFAULT_INTERVAL_S = 2.0
 SHELL_TIMEOUT_S = 20.0
@@ -170,6 +179,10 @@ def frame_stats(samples: list[FrameSample]) -> dict[str, Any]:
 
     jank 判据用**逐帧** FrameInterval（缺失时退回全体中位数）；每帧与其自身
     刷新周期比较，避免可变刷新率下用单一周期误判。
+
+    冻帧/连续段（perf-metrics-expansion 02）：冻帧 = 耗时 >700ms；最长连续
+    超时帧段按**采样序列顺序**扫描（未渲染的帧不在 framestats 里，段只覆盖
+    采到的帧；跨轮去重保持首见顺序，即时间序）。
     """
     if not samples:
         return {}
@@ -177,10 +190,19 @@ def frame_stats(samples: list[FrameSample]) -> dict[str, Any]:
     intervals = [sample.interval_ms for sample in samples if sample.interval_ms]
     fallback_interval = metrics_module.percentile(sorted(intervals), 0.5) if intervals else None
     janky = 0
+    frozen = 0
+    streak = 0
+    streak_max = 0
     for sample in samples:
         period = sample.interval_ms or fallback_interval
         if period is not None and sample.duration_ms > period * JANK_MULTIPLIER:
             janky += 1
+            streak += 1
+            streak_max = max(streak_max, streak)
+        else:
+            streak = 0
+        if sample.duration_ms > FROZEN_FRAME_MS:
+            frozen += 1
     count = len(durations)
     return {
         "count": count,
@@ -189,15 +211,19 @@ def frame_stats(samples: list[FrameSample]) -> dict[str, Any]:
         "p99": metrics_module.percentile(durations, 0.99),
         "jankRatioPct": janky / count * 100.0,
         "jankCount": janky,
+        "frozenCount": frozen,
+        "frozenRatioPct": frozen / count * 100.0,
+        "jankStreakMax": streak_max,
         "refreshHz": (1000.0 / fallback_interval) if fallback_interval else None,
     }
 
 
 def aggregate_from_samples(samples: list[FrameSample]) -> list[dict[str, Any]]:
-    """把逐帧样本聚合成 5 个可入库行；无样本返回空列表。
+    """把逐帧样本聚成 7 个可入库行；无样本返回空列表。
 
-    P50/P90/P99 与超时帧占比是会话级单样本结论（聚合字段填单值），
-    ``app_frame_count`` 为实际采到的帧数，同时充当 judge 的样本下限依据。
+    P50/P90/P99、超时帧占比、冻帧占比与最长连续超时帧段都是会话级单样本结论
+    （聚合字段填单值），``app_frame_count`` 为实际采到的帧数，同时充当 judge
+    的样本下限依据。
     """
     stats = frame_stats(samples)
     if not stats:
@@ -208,6 +234,8 @@ def aggregate_from_samples(samples: list[FrameSample]) -> list[dict[str, Any]]:
         metrics_module.aggregate_row(METRIC_P99, [stats["p99"]]),
         metrics_module.aggregate_row(METRIC_JANK_RATIO, [stats["jankRatioPct"]]),
         metrics_module.aggregate_row(METRIC_COUNT, [float(stats["count"])]),
+        metrics_module.aggregate_row(METRIC_FROZEN_RATIO, [stats["frozenRatioPct"]]),
+        metrics_module.aggregate_row(METRIC_JANK_STREAK, [float(stats["jankStreakMax"])]),
     ]
 
 

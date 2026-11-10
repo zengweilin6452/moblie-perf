@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
+from . import battery as battery_module
 from . import collector
 from . import jank as jank_module
 from . import metrics as metrics_module
@@ -179,6 +181,7 @@ def build_report(
         "series": series if series is not None else {},
         "events": list(events or []),
         "startup": meta.get("startup"),
+        "logwatch": meta.get("logwatch"),
         "integrity": integrity,
     }
     if any(key in (metrics_summary or {}) for key in jank_module.GRADE_METRIC_KEYS.values()):
@@ -188,6 +191,14 @@ def build_report(
             "thresholdsMs": jank_module.validate_thresholds(
                 jank_thresholds_ms or jank_module.DEFAULT_THRESHOLDS_MS
             ),
+        }
+    # 场景耗电量（perf-metrics-expansion 01）：口径随报告落盘——只计放电段的
+    # 梯形积分，与平均电流（瞬时口径）不可互算
+    if battery_module.METRIC_KEY in (metrics_summary or {}):
+        report["battery"] = {
+            "sourceMetric": battery_module.SOURCE_METRIC_KEY,
+            "granularity": "per_session",
+            "method": "trapezoid_discharge_only",
         }
     # 逐帧口径（ticket 15）：与上面窗口级口径并存，粒度不同、不可互算
     if frames is not None:
@@ -455,8 +466,9 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
         )
 
     meta_rows = "".join(
-        f"<tr><td>{html_escape(name)}</td><td>{html_escape(value)}</td></tr>"
-        for name, value in _meta_rows(report)
+        f"<tr><td>{html_escape(name)}</td>"
+        f"<td>{value if name.startswith(('产物', '报告产物')) else html_escape(value)}</td></tr>"
+        for name, value in _meta_rows(report, run_dir)
     )
     chart_divs = "".join(
         f'<div class="chart" id="chart-{html_escape(key)}"></div>'
@@ -818,6 +830,8 @@ def _frame_markup(report: dict[str, Any]) -> str:
         ("app_frame_p90_ms", "帧耗时 P90 / Frame P90"),
         ("app_frame_p99_ms", "帧耗时 P99 / Frame P99"),
         ("app_frame_jank_ratio_pct", "超时帧占比 / Janky frame ratio"),
+        ("app_frame_frozen_ratio_pct", "冻帧占比 / Frozen frame ratio"),
+        ("app_frame_jank_streak_max", "最长连续超时帧段 / Max jank streak"),
         ("app_frame_count", "采样帧数 / Sampled frames"),
     )
     rows = [
@@ -838,6 +852,9 @@ def _frame_markup(report: dict[str, Any]) -> str:
         detail.append(f"刷新率 / Refresh ≈ {_fmt(refresh)} Hz")
     if multiplier:
         detail.append(f"超时判据 / Jank criterion：帧耗时 > 刷新周期 × {_fmt(multiplier)}")
+    frozen_ms = frames.get("frozenThresholdMs")
+    if frozen_ms:
+        detail.append(f"冻帧判据 / Frozen：帧耗时 > {_fmt(frozen_ms)} ms")
     detail_text = ("；".join(detail) + "。") if detail else ""
     return (
         "<h2>逐帧卡顿 / Per-frame jank</h2>"
@@ -1052,7 +1069,41 @@ def _jank_threshold_line_script(report: dict[str, Any]) -> str:
     )
 
 
-def _meta_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
+def _artifact_links_html(report: dict[str, Any], run_dir: str | Path) -> str:
+    """产物清单单元格：一行一个、相对 report.html 所在目录的链接（与 HAR 产物行同风格）。"""
+    artifacts = report.get("artifacts") or []
+    if not artifacts:
+        return "无"
+    links = []
+    for art in artifacts:
+        # relpath 兜底：产物不在 run 目录（历史 run/外部路径）或跨盘符时，如实回退原路径
+        try:
+            rel = Path(os.path.relpath(art, run_dir)).as_posix()
+        except ValueError:
+            rel = Path(art).as_posix()
+        links.append(f'<a href="{html_escape(rel)}">{html_escape(rel)}</a>')
+    return "<br>".join(links)
+
+
+def _report_outputs_html(run_dir: str | Path) -> str:
+    """报告自身产物行：报告双产物 / meta.json / 网络日志，相对链接一行一个（存在才列）。"""
+    run = Path(run_dir)
+    names = ["report.html", "report.json", "meta.json"]
+    if (run / "network").is_dir():
+        names.extend(
+            p.relative_to(run).as_posix()
+            for p in sorted((run / "network").iterdir())
+            if p.is_file()
+        )
+    links = [
+        f'<a href="{html_escape(rel)}">{html_escape(rel)}</a>'
+        for rel in names
+        if (run / rel).exists()
+    ]
+    return "<br>".join(links) if links else "无"
+
+
+def _meta_rows(report: dict[str, Any], run_dir: str | Path) -> list[tuple[str, str]]:
     integrity = report.get("integrity") or {}
     marks = report.get("marks") or []
     startup = report.get("startup") or {}
@@ -1075,7 +1126,8 @@ def _meta_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
         ("SoloPi 会话", report.get("soloSessionId")),
         ("打标 / Marks", json.dumps(marks, ensure_ascii=False) if marks else "无"),
         ("启动 / Startup", startup_text or "未编排"),
-        ("产物 / Artifacts", "\n".join(report.get("artifacts") or []) or "无"),
+        ("产物 / Artifacts", _artifact_links_html(report, run_dir)),
+        ("报告产物 / Report outputs", _report_outputs_html(run_dir)),
         ("完整性 / Integrity", json.dumps(integrity, ensure_ascii=False) if integrity else "无"),
     ]
     return [(name, str(value if value is not None else "")) for name, value in rows]

@@ -201,6 +201,8 @@ verdict = kit.judge(report, JudgeSpec(baseline="bili-home-v3",
 
 每个 run 双产物：单文件 HTML（内嵌离线 ECharts，无 CDN 依赖）+ 同内容 JSON；趋势接口 `kit.trend(pkg, metric, profile=...)` 供宿主绘图。三源数据（SoloPi / 补采 / 事件）在同一时间轴上呈现。
 
+> 后续增量：APP 抓包（HAR，默认关闭）在报告网络剖面增加 `network.har` 摘要与 `network/app.har` 相对链接。设计与验收见 [ADR-0005](adr/0005-app-har-capture.md)、[嵌入指南 §3.3](嵌入指南.md#33-app-抓包har默认关) 与 [真机验收与 HTML 报告](app-har-capture-acceptance.md)。
+
 ### 6.4 指标字典（metrics.py）
 
 canonical key 为全组件唯一词汇（judge/report/store/CLI/宿主只见 canonical key）；中文原始列名的映射只存在于此。报告展示用字典的双语标签。
@@ -222,6 +224,7 @@ def test_home_scroll(device, perf):          # perf fixture 由 --mobile-perf �
 ```
 mobile-perf doctor [--serial]                 # 巡检+自愈（短事务 gate）
 mobile-perf collect <pkg> --items CPU,FPS,Memory --duration 180
+mobile-perf collect <pkg> --capture-har --net-tier decrypt   # APP 抓包（后续增量）
 mobile-perf report <runId> [--baseline name]
 mobile-perf trend <pkg> --metric mem_pss_mb
 ```

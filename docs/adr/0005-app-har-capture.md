@@ -3,6 +3,7 @@
 - 状态：已接受
 - 日期：2026-11-07
 - 关联：ADR-0002（Harness 子进程边界）、ADR-0004（mitmproxy 可选子进程）
+- 验收：[真机验收与 HTML 报告](../app-har-capture-acceptance.md)
 
 ## 背景
 

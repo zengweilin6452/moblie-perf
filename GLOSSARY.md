@@ -67,6 +67,13 @@ _Avoid_: 模板版本（moblie-auto 语境）
 passed / failed / not_tested 三态判定结果，附证据引用；产生它的机制称 Judge。
 _Avoid_: doctor（设备就绪检查，另一概念）
 
+**稳定性计数（Stability Counts）**:
+采集会话内归属目标包的 crash/ANR 事件数（`app_crash_count`/`app_anr_count`），
+会话级单样本。只计 `package` 明确归属目标包的事件；未归属事件留时间轴单独
+计数供人工判读，不进 app 计数。监听正常且零事件时 0 是有效结论；监听不可用
+标 not_tested，不伪造 0。
+_Avoid_: crash 率（分母口径未定义）、崩溃数（不含归属约定）
+
 **泄漏趋势（Leak Trend）**:
 同 target_pkg + device_profile 的历史 run 中，指标 median 随墙钟时间做
 普通最小二乘回归得到的增长速率（`mem_pss_slope_mb_per_day`，MB/day），
@@ -75,8 +82,9 @@ _Avoid_: 内存曲线（单 run 序列，不含跨 run 回归）、内存增长�
 
 **逐帧口径（Per-frame Scope）**:
 以单帧耗时（`gfxinfo framestats` 的 FrameCompleted − IntendedVsync）为基础
-统计的卡顿口径，给出 P50/P90/P99 与超时帧占比。与「卡顿分级」的窗口级口径
-粒度不同、不可互算，两者在报告中并列展示。
+统计的卡顿口径，给出 P50/P90/P99、超时帧占比、冻帧占比（>700ms，Android
+vitals 判据）与最长连续超时帧段（按采样序列扫描，未渲染的帧不计入段）。
+与「卡顿分级」的窗口级口径粒度不同、不可互算，两者在报告中并列展示。
 _Avoid_: 卡顿分级（窗口级口径，另一概念）、掉帧率
 
 **整页加载耗时（Page Load Time）**:
@@ -102,6 +110,12 @@ _Avoid_: GPU 占用瞬时值、帧率（另一概念）、跨机型通用 GPU �
 原因都要留下记录；全部不可用才标 not_tested。区分"本机没有这个源"与"有这个
 源但本次读失败"，两者的处置不同。
 _Avoid_: 兜底值、默认值（都不含"逐级留痕"的含义）
+
+**热状态档（Thermal Status）**:
+`dumpsys thermalservice` 的设备热节流档位（0 NONE–6 SHUTDOWN），与 CPU 当前
+最大频率一起作为性能可比性的**混杂因子**记录：只采样落库，默认不参与门禁
+（阈值归宿主）。跨 run 比较资源指标前应先看热状态是否同档；0 档是有效读数。
+_Avoid_: 电池温度（另一指标）、降频判定（组件不判定，只记录）
 
 ## 弱网与网络剖面
 
