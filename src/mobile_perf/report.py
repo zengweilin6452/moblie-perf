@@ -1,7 +1,7 @@
 """报告聚合：每个 run 产出同内容 JSON 与单文件 HTML（内嵌离线 ECharts，无 CDN 依赖）。
 
-JSON 与 HTML 出自同一份报告字典（同一聚合数据源）；事件时间轴的渲染归 07 号
-工单，本模块只保留 events 数据注入点。
+JSON 与 HTML 出自同一份报告字典（同一聚合数据源）；事件在元信息小节以折叠
+列表呈现（数据来自 store 已落盘事件，不新增采集）。
 """
 
 from __future__ import annotations
@@ -363,80 +363,286 @@ def write_report(run_dir: str | Path, report: dict[str, Any]) -> Path:
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 _ECHARTS_PATH = _ASSETS_DIR / "echarts.min.js"
 
+# 设计体系：浅色工程仪器面板。纸感灰底 + 白色盘面 + 墨蓝文字，仪器蓝主色，
+# 语义色只用于真实判定（完整性/生效/失败/降级），不发明性能好坏结论。
+# 离线约束：无 webfont、无 url()、无外部引用（Q8），系统字体栈 + 等宽数字。
+_CSS = """
+:root {
+  --bg: #f4f6f8; --surface: #ffffff; --ink: #1c2430; --muted: #5b6672; --faint: #8a94a1;
+  --line: #dfe3e8; --line-soft: #eceff3;
+  --accent: #2f5fd0; --accent-ink: #1e4396; --accent-bg: #e9f0fc;
+  --ok: #177245; --ok-bg: #e6f4ec;
+  --warn: #9a6a00; --warn-bg: #fbf3dd;
+  --danger: #b3261e; --danger-bg: #fbe9e7;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: 60px; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.65;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  counter-reset: sec;
+}
+code { font-family: var(--mono); font-size: 12px; }
+.mono { font-family: var(--mono); font-size: 12px; }
+a { color: var(--accent-ink); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.toc { position: sticky; top: 0; z-index: 30; background: var(--surface); border-bottom: 1px solid var(--line); }
+.toc-inner { max-width: 1200px; margin: 0 auto; padding: 0 20px; display: flex; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.toc-inner::-webkit-scrollbar { height: 4px; }
+.toc-inner::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+.toc-inner a { flex: none; padding: 12px 10px; font-size: 13px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
+.toc-inner a.toc-brand { font-weight: 650; color: var(--ink); font-family: var(--mono); font-size: 12px; }
+.toc-inner a.active { color: var(--accent-ink); border-bottom-color: var(--accent); }
+@media (hover: hover) { .toc-inner a:hover { color: var(--ink); } }
+
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 20px 72px; }
+.overview { padding-top: 26px; }
+.kicker { font-size: 11px; color: var(--faint); text-transform: uppercase; }
+h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; margin: 4px 0 6px; }
+.head-sub { font-size: 12px; color: var(--muted); }
+.head-sub code { color: var(--muted); }
+.head-time { margin-left: 12px; color: var(--faint); }
+.chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border-radius: 999px; font-size: 12px; background: #eef1f5; color: var(--muted); }
+.chip.ok { background: var(--ok-bg); color: var(--ok); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.danger { background: var(--danger-bg); color: var(--danger); }
+.chip.ok::before, .chip.warn::before, .chip.danger::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.kpis { margin-top: 18px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.kpi { display: block; background: var(--surface); padding: 14px 16px; text-decoration: none; color: inherit; }
+.kpi .k-label { display: block; font-size: 12px; color: var(--muted); }
+.kpi .k-value { display: block; font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; margin-top: 2px; }
+.kpi .k-unit { font-size: 13px; font-weight: 400; color: var(--faint); margin-left: 4px; }
+.kpi .k-sub { display: block; font-size: 11px; color: var(--faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+@media (hover: hover) { .kpi:hover { background: #f7f9fc; } }
+
+.section { margin-top: 38px; }
+.section h2 { font-size: 16px; font-weight: 650; margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px; }
+.section h2::before { counter-increment: sec; content: counter(sec, decimal-leading-zero); font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--faint); }
+.section p { font-size: 12.5px; color: var(--muted); line-height: 1.7; max-width: 78ch; margin: 10px 0 0; }
+
+table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 4px; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; text-align: left; padding: 8px 12px; background: #f7f9fb; border-bottom: 1px solid var(--line); }
+td { padding: 7px 12px; font-size: 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (hover: hover) { tbody tr:hover td { background: #f7f9fc; } }
+tr.group td { background: #f2f5f9; font-size: 12px; font-weight: 600; color: var(--muted); padding: 6px 12px; }
+.meta td:first-child { width: 190px; background: #f7f9fb; color: var(--muted); font-size: 12px; font-weight: 500; }
+
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+.badge.ok { color: var(--ok); background: var(--ok-bg); }
+.badge.warn { color: var(--warn); background: var(--warn-bg); }
+.badge.danger { color: var(--danger); background: var(--danger-bg); }
+.badge.muted { color: var(--muted); background: #eef1f5; }
+.grade-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+.grade-dot.light { background: #b97e0f; }
+.grade-dot.heavy { background: #c2600f; }
+.grade-dot.severe { background: #b3261e; }
+.danger-text { color: var(--danger); font-weight: 600; }
+
+.stat-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
+.stat-value { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.stat-unit { color: var(--faint); }
+.stat-label { color: var(--muted); font-size: 13px; margin-left: 6px; }
+
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 16px; margin-top: 4px; }
+.chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px 10px; margin: 0; }
+.chart-card figcaption { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.c-label { font-size: 13px; font-weight: 600; }
+.c-en { font-size: 11px; color: var(--faint); }
+.c-unit { font-size: 11px; font-family: var(--mono); color: var(--accent-ink); background: var(--accent-bg); padding: 1px 7px; border-radius: 999px; }
+.c-src { font-size: 11px; color: var(--faint); margin-left: auto; }
+.chart { width: 100%; height: 260px; margin-top: 6px; }
+.chart-wide { grid-column: 1 / -1; }
+.chart-wide .chart { height: 320px; }
+.chart-note { font-size: 11.5px; color: var(--warn); margin: 6px 0 2px; }
+
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+summary { cursor: pointer; font-size: 13px; color: var(--accent-ink); font-weight: 500; }
+details[open] summary { margin-bottom: 8px; }
+.event-list { margin-top: 12px; }
+.artifact-list { padding: 6px 10px; }
+.artifact-links { line-height: 1.9; }
+.noscript-note { padding: 12px; color: var(--warn); }
+
+@media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) {
+  .wrap { padding: 0 12px 56px; }
+  .toc-inner { padding: 0 12px; }
+  h1 { font-size: 20px; }
+  .kpi .k-value { font-size: 22px; }
+  .chart-grid { grid-template-columns: 1fr; }
+  .meta td:first-child { width: 110px; }
+  th, td { padding: 6px 8px; }
+  /* 宽表（聚合 9 列）在窄屏内部横向滚动，不撑破页面 */
+  table { display: block; overflow-x: auto; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media print {
+  .toc { display: none; }
+  body { background: #ffffff; }
+  .section { margin-top: 20px; }
+  .chart-card { break-inside: avoid; }
+}
+"""
+
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mobile-perf 报告 {run_id}</title>
-<style>
-body {{ font-family: system-ui, sans-serif; margin: 24px; color: #1f2430; }}
-h1 {{ font-size: 20px; }} h2 {{ font-size: 16px; margin-top: 28px; }}
-table {{ border-collapse: collapse; margin-top: 8px; }}
-td, th {{ border: 1px solid #d5d9e0; padding: 4px 10px; font-size: 13px; text-align: left; }}
-th {{ background: #f2f4f8; }}
-.chart {{ width: 100%; height: 320px; margin-top: 12px; }}
-.meta td:first-child {{ background: #f2f4f8; font-weight: 600; }}
-</style>
+<style>{css}</style>
 </head>
 <body>
-<h1>mobile-perf 性能报告：{run_id}</h1>
-<h2>会话元信息</h2>
-<table class="meta">{meta_rows}</table>
-{startup_markup}
-{page_markup}
-{jank_markup}
-{frame_markup}
-{gpu_markup}
-{network_markup}
-{api_markup}
-<h2>聚合统计</h2>
-<table>
-<tr><th>指标</th><th>单位</th><th>来源</th><th>min</th><th>median</th><th>mean</th>
-<th>max</th><th>p90</th><th>样本数</th></tr>
-{summary_rows}
-</table>
-<h2>指标曲线</h2>
-{chart_divs}
-<noscript>曲线图需要 JavaScript（内嵌 ECharts）渲染；聚合统计见上表。</noscript>
+<nav class="toc" aria-label="报告章节"><div class="toc-inner"><a class="toc-brand" href="#overview">mobile-perf</a>{nav_links}</div></nav>
+<div class="wrap">
+<section id="overview" class="overview">
+{header_html}
+{kpi_html}
+</section>
+{body_sections}
+</div>
+<noscript><p class="noscript-note">曲线图需要 JavaScript（内嵌 ECharts）渲染；聚合统计见上表。</p></noscript>
 <!-- vendor:echarts BEGIN -->
 <script>
 {echarts_js}
 </script>
 <!-- vendor:echarts END -->
 <script id="report-data">window.__REPORT__ = {report_json};</script>
-<script>
-(function () {{
+{main_script}
+{combined_script}
+{scrollspy_script}
+</body>
+</html>
+"""
+
+# 图表主脚本：统一仪器蓝调色板、轴样式、滚轮缩放与 PNG 导出；纵轴离群截断
+# 只影响显示（JSON 数据不动），并在图下如实标注离群点数量与真实最大值。
+# 注意：零参回调一律用箭头函数，避免与 IIFE 计数断言 "(function () {" 冲突。
+_MAIN_SCRIPT = """<script>
+(function () {
   var report = window.__REPORT__;
-  var series = report.series || {{}};
+  var series = report.series || {};
   var startup = report.startup || null;
-  Object.keys(series).forEach(function (key) {{
+  var PALETTE = ["#2f5fd0", "#0e8f6e", "#c93a32", "#b97e0f", "#7a4fd0", "#0e7f9e", "#c24a8a", "#6f7d1f"];
+  var registry = window.__perfCharts = [];
+  function axisCap(points) {
+    if (!points || points.length < 20) return null;
+    var ys = points.map(function (p) { return p[1]; }).sort(function (a, b) { return a - b; });
+    var p95 = ys[Math.floor(ys.length * 0.95)];
+    var vmax = ys[ys.length - 1];
+    if (!(vmax > 10 * Math.max(Math.abs(p95), 1e-9))) return null;
+    // 截断基准取 p90：离群簇可污染 p95/p99（真机 fps 毛刺占 7%），p90 仍落在主体内
+    var p90 = ys[Math.floor(ys.length * 0.90)];
+    if (p90 <= 0) return null;
+    var raw = p90 * 1.5;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var cap = Math.ceil(raw / mag * 2) / 2 * mag;
+    var outliers = ys.filter(function (y) { return y > cap; }).length;
+    if (!outliers || cap <= 0) return null;
+    return { max: cap, outliers: outliers, trueMax: vmax };
+  }
+  function capNote(el, cap, unit) {
+    var p = document.createElement("p");
+    p.className = "chart-note";
+    p.textContent = "纵轴已截断至 " + cap.max + " " + unit + "：" + cap.outliers +
+      " 个离群点超出显示范围（真实最大 " + cap.trueMax + " " + unit + "），数据未改动。";
+    el.parentNode.insertBefore(p, el.nextSibling);
+  }
+  function axisStyle(name) {
+    return { type: "value", name: name,
+      nameTextStyle: { color: "#8a94a1", fontSize: 11 },
+      axisLabel: { color: "#5b6672", fontSize: 11 },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: "#eceff3" } } };
+  }
+  var xAxis = { type: "value", name: "s",
+    nameTextStyle: { color: "#8a94a1", fontSize: 11 },
+    axisLabel: { color: "#5b6672", fontSize: 11 },
+    axisLine: { lineStyle: { color: "#c9cfd8" } },
+    splitLine: { show: false } };
+  var tooltip = { trigger: "axis", backgroundColor: "#ffffff",
+    borderColor: "#dfe3e8", borderWidth: 1,
+    textStyle: { color: "#1c2430", fontSize: 12 },
+    axisPointer: { type: "line", lineStyle: { color: "#9aa4b2", type: "dashed" } } };
+  function toolbox(key) {
+    return { right: 6, top: 0, itemSize: 14,
+      iconStyle: { borderColor: "#8a94a1" },
+      emphasis: { iconStyle: { borderColor: "#2f5fd0" } },
+      feature: { saveAsImage: { title: "导出 PNG", name: report.runId + "-" + key,
+        pixelRatio: 2, backgroundColor: "#ffffff" } } };
+  }
+  window.__perfViz = { palette: PALETTE, axisCap: axisCap, capNote: capNote,
+    axisStyle: axisStyle, xAxis: xAxis, tooltip: tooltip, toolbox: toolbox };
+  Object.keys(series).forEach(function (key) {
     var item = series[key];
     var el = document.getElementById("chart-" + key);
     if (!el || typeof echarts === "undefined") return;
     var chart = echarts.init(el);
-    var option = {{
-      title: {{ text: item.labelZh + " / " + item.labelEn + " (" + item.unit + ")",
-               textStyle: {{ fontSize: 13 }} }},
-      tooltip: {{ trigger: "axis" }},
-      xAxis: {{ type: "value", name: "s" }},
-      yAxis: {{ type: "value", name: item.unit }},
-      series: [{{
-        type: "line", showSymbol: false,
-        data: item.points.map(function (p) {{ return [p[0], p[1]]; }})
-      }}],
-      grid: {{ left: 60, right: 24, top: 40, bottom: 40 }}
-    }};
+    var yAxis = axisStyle(item.unit);
+    var cap = axisCap(item.points);
+    if (cap) yAxis.max = cap.max;
+    var option = {
+      color: PALETTE,
+      tooltip: tooltip,
+      xAxis: xAxis,
+      yAxis: yAxis,
+      series: [{
+        type: "line", showSymbol: false, symbol: "circle", symbolSize: 5,
+        lineStyle: { width: 1.6 }, areaStyle: { opacity: 0.07 },
+        data: item.points.map(function (p) { return [p[0], p[1]]; })
+      }],
+      dataZoom: [{ type: "inside", xAxisIndex: 0 }],
+      toolbox: toolbox(key),
+      grid: { left: 52, right: 18, top: 26, bottom: 30 }
+    };
 __STARTUP_MARKLINE__
 __PAGE_MARKLINE__
 __JANK_THRESHOLD_LINE__
     chart.setOption(option);
-  }});
-}})();
-</script>
-{combined_script}
-</body>
-</html>
-"""
+    if (cap) capNote(el, cap, item.unit);
+    registry.push(chart);
+  });
+  var resizePending = false;
+  window.addEventListener("resize", () => {
+    if (resizePending) return;
+    resizePending = true;
+    requestAnimationFrame(() => {
+      resizePending = false;
+      registry.forEach(function (c) { c.resize(); });
+    });
+  });
+})();
+</script>"""
+
+# 章节导航 scroll-spy：IntersectionObserver 不可用时退化为纯锚点（老 WebView）
+_SCROLLSPY_SCRIPT = """<script>
+(function () {
+  if (!("IntersectionObserver" in window)) return;
+  var links = Array.prototype.slice.call(document.querySelectorAll(".toc-inner a[href^='#']"));
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+  var current = null;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var a = byId[en.target.id];
+      if (!a) return;
+      if (current) { current.classList.remove("active"); current.removeAttribute("aria-current"); }
+      a.classList.add("active");
+      a.setAttribute("aria-current", "true");
+      current = a;
+    });
+  }, { rootMargin: "-60px 0px -75% 0px", threshold: 0 });
+  document.querySelectorAll("section[id]").forEach(function (s) { obs.observe(s); });
+})();
+</script>"""
 
 
 def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
@@ -446,11 +652,227 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
     echarts_js = echarts_js.replace("</script", "<\\/script").replace("<!--", "<\\!--")
     report_json = json.dumps(report, ensure_ascii=False).replace("</", "<\\/")
 
-    summary_rows = []
-    for key, entry in (report.get("metricsSummary") or {}).items():
-        summary_rows.append(
-            "<tr><td>{label}</td><td>{unit}</td><td>{source}</td><td>{min}</td><td>{median}</td>"
-            "<td>{mean}</td><td>{max}</td><td>{p90}</td><td>{count}</td></tr>".format(
+    sections, combined_script = _body_sections(report, run_dir)
+    section_ids = {sid for sid, _, _ in sections}
+    nav_links = "".join(
+        f'<a href="#{sid}">{html_escape(label)}</a>' for sid, label, _ in sections
+    )
+    body_sections = "\n".join(
+        f'<section id="{sid}" class="section">\n{content}\n</section>'
+        for sid, _, content in sections
+    )
+
+    html_text = _HTML_TEMPLATE.format(
+        run_id=html_escape(report["runId"]),
+        css=_CSS,
+        nav_links=nav_links,
+        header_html=_header_html(report),
+        kpi_html=_kpi_html(report, section_ids),
+        body_sections=body_sections,
+        echarts_js=echarts_js,
+        report_json=report_json,
+        main_script=_MAIN_SCRIPT,
+        combined_script=combined_script,
+        scrollspy_script=_SCROLLSPY_SCRIPT,
+    )
+    # 启动点标记按需注入（占位符在 format 之后替换，避免花括号转义）
+    html_text = html_text.replace("__STARTUP_MARKLINE__", _startup_markline_script(report))
+    html_text = html_text.replace("__PAGE_MARKLINE__", _page_markline_script(report))
+    html_text = html_text.replace(
+        "__JANK_THRESHOLD_LINE__", _jank_threshold_line_script(report)
+    )
+    path = Path(run_dir) / "report.html"
+    path.write_text(html_text, encoding="utf-8")
+    return path
+
+
+# 指标分组：聚合表与曲线网格共用同一顺序（帧率/卡顿在最前，网络/稳定性殿后）
+_METRIC_GROUPS: list[tuple[str, tuple[str, ...]]] = [
+    ("启动与页面", ("app_cold_start_ms", "app_warm_start_ms", "page_load_ms")),
+    ("帧率与卡顿", (
+        "fps_frame", "frame_delay_max_ms", "frame_delay_count", "frame_delay_ratio_pct",
+        "app_jank_light_count", "app_jank_heavy_count", "app_jank_severe_count",
+        "app_frame_p50_ms", "app_frame_p90_ms", "app_frame_p99_ms",
+        "app_frame_jank_ratio_pct", "app_frame_frozen_ratio_pct",
+        "app_frame_jank_streak_max", "app_frame_count",
+    )),
+    ("CPU 与热", (
+        "cpu_process_pct", "cpu_global_pct", "cpu_freq_max_mhz",
+        "device_thermal_status", "temp_battery_c",
+    )),
+    ("内存", ("mem_pss_mb", "mem_privdirty_mb", "mem_global_mb", "mem_pss_slope_mb_per_day")),
+    ("GPU", ("gpu_util_pct", "gpu_mem_mb")),
+    ("电池", (
+        "battery_current_avg_ma", "battery_current_ma",
+        "battery_power_avg_mw", "battery_power_mw", "battery_consumed_mah", "battery_pct",
+    )),
+    ("网络与接口", (
+        "net_conn_duration_ms", "net_rx_kbps", "net_tx_kbps", "net_rx_total_kb", "net_tx_total_kb",
+        "api_req_duration_ms", "api_req_count", "api_error_rate_pct", "api_payload_kb",
+    )),
+    ("稳定性与资源", ("app_crash_count", "app_anr_count", "app_thread_count", "app_fd_count")),
+]
+
+
+def _ordered_keys(keys: Any) -> list[str]:
+    """按 _METRIC_GROUPS 排序，字典外 key 排最后（保持原相对顺序）。"""
+    remaining = list(keys)
+    ordered = []
+    for _, group_keys in _METRIC_GROUPS:
+        for key in group_keys:
+            if key in remaining:
+                ordered.append(key)
+                remaining.remove(key)
+    return ordered + remaining
+
+
+def _body_sections(report: dict[str, Any], run_dir: str | Path) -> tuple[list[tuple[str, str, str]], str]:
+    """按固定顺序收集非空小节；返回 (小节列表, 同图脚本)。导航与正文同源。"""
+    charts_html, combined_script = _charts_grid_html(report)
+    candidates = [
+        ("startup", "启动", _startup_markup(report)),
+        ("jank", "卡顿", _jank_markup(report)),
+        ("frames", "逐帧", _frame_markup(report)),
+        ("gpu", "GPU", _gpu_markup(report)),
+        ("network", "网络", _network_markup(report)),
+        ("api", "接口", _api_markup(report)),
+        ("pages", "整页", _page_markup(report)),
+        ("summary", "聚合", _summary_html(report)),
+        ("charts", "曲线", charts_html),
+        ("meta", "元信息", _meta_html(report, run_dir)),
+    ]
+    return [(sid, label, content) for sid, label, content in candidates if content], combined_script
+
+
+def _header_html(report: dict[str, Any]) -> str:
+    """页头：被测应用为主标题，run/时间为辅，状态 chips 只反映真实判定。"""
+    target = html_escape(str(report.get("target") or "未知应用"))
+    run_id = html_escape(str(report.get("runId") or ""))
+    started = html_escape(str(report.get("startedAt") or ""))
+    stopped = html_escape(str(report.get("stoppedAt") or ""))
+    chips: list[str] = []
+    device_text = " · ".join(
+        str(x) for x in (report.get("deviceProfile"), report.get("serial")) if x
+    )
+    if device_text:
+        chips.append(f'<span class="chip">{html_escape(device_text)}</span>')
+    if report.get("durationS") is not None:
+        chips.append(f'<span class="chip">时长 {_fmt(report["durationS"])} s</span>')
+    integrity = report.get("integrity") or {}
+    if integrity:
+        check = str(integrity.get("deviceRowCheck") or "未知")
+        kind = "ok" if check == "passed" else "warn"
+        chips.append(f'<span class="chip {kind}">完整性 {html_escape(check)}</span>')
+    network = report.get("network") or {}
+    if network:
+        effective = bool(network.get("effective"))
+        kind = "ok" if effective else "warn"
+        text = "网络生效" if effective else "网络未生效"
+        chips.append(f'<span class="chip {kind}">{text}</span>')
+    startup = report.get("startup") or {}
+    if startup and startup.get("ms") is None:
+        chips.append('<span class="chip danger">启动失败</span>')
+    return (
+        '<header class="page-head">'
+        '<div class="kicker">mobile-perf 性能报告</div>'
+        f"<h1>{target}</h1>"
+        f'<div class="head-sub"><code>{run_id}</code>'
+        f'<span class="head-time">{started} → {stopped}</span></div>'
+        f'<div class="chips">{"".join(chips)}</div>'
+        "</header>"
+    )
+
+
+def _kpi_html(report: dict[str, Any], section_ids: set[str]) -> str:
+    """KPI 数字带：只呈现本 run 真实存在的指标，点击跳到对应曲线/小节。
+
+    不做性能好坏判定（阈值归宿主/judge），数值一律墨色；副行给 P90/峰值等
+    第二口径，避免单数字下结论。
+    """
+    summary = report.get("metricsSummary") or {}
+    series = report.get("series") or {}
+    items: list[tuple[str, str, str, str, str]] = []
+
+    def href_for(key: str, section: str) -> str:
+        if key in series:
+            return f"#chart-{key}"
+        return f"#{section}" if section in section_ids else "#summary"
+
+    startup = report.get("startup") or {}
+    if isinstance(startup.get("ms"), (int, float)):
+        spec = metrics_module.METRICS.get(startup.get("metricKey") or "")
+        label = spec.label_zh if spec else "启动耗时"
+        sub_bits = []
+        if startup.get("displayedMs") is not None:
+            sub_bits.append(f"Displayed {_fmt(startup['displayedMs'])}")
+        if startup.get("deviationMs") is not None:
+            sub_bits.append(f"偏差 {_fmt(startup['deviationMs'])}")
+        items.append((label, _fmt(startup["ms"]), "ms", " / ".join(sub_bits) + " ms" if sub_bits else "", "#startup"))
+
+    def add(key: str, label: str, stat: str = "median", sub: str = "", section: str = "summary"):
+        entry = summary.get(key) or {}
+        value = entry.get(stat)
+        if value is None:
+            return
+        if not sub and entry.get("p90") is not None:
+            sub = f"P90 {_fmt(entry['p90'])}"
+        items.append((label, _fmt(value), str(entry.get("unit") or ""), sub, href_for(key, section)))
+
+    add("fps_frame", "帧率（中位）")
+    frozen = (summary.get("app_frame_frozen_ratio_pct") or {}).get("median")
+    add(
+        "app_frame_jank_ratio_pct", "超时帧占比",
+        sub=f"冻帧占比 {_fmt(frozen)}%" if frozen is not None else "", section="frames",
+    )
+    p50 = (summary.get("app_frame_p50_ms") or {}).get("median")
+    p90 = (summary.get("app_frame_p90_ms") or {}).get("median")
+    add(
+        "app_frame_p99_ms", "帧耗时 P99",
+        sub=f"P50 {_fmt(p50)} · P90 {_fmt(p90)}" if p50 is not None and p90 is not None else "",
+        section="frames",
+    )
+    add("cpu_process_pct", "应用 CPU（中位）")
+    mem_max = (summary.get("mem_pss_mb") or {}).get("max")
+    add("mem_pss_mb", "PSS 内存（中位）", sub=f"峰值 {_fmt(mem_max)}" if mem_max is not None else "")
+    power = (summary.get("battery_power_avg_mw") or {}).get("median")
+    add(
+        "battery_current_avg_ma", "平均电流",
+        sub=f"平均功率 {_fmt(power)} mW" if power is not None else "",
+    )
+    conn_n = (summary.get("net_conn_duration_ms") or {}).get("sampleCount")
+    add(
+        "net_conn_duration_ms", "连接耗时 P90", stat="p90",
+        sub=f"{conn_n} 次样本" if conn_n is not None else "", section="network",
+    )
+    if not items:
+        return ""
+    cells = "".join(
+        f'<a class="kpi" href="{html_escape(href)}"><span class="k-label">{html_escape(label)}</span>'
+        f'<span class="k-value">{html_escape(value)}<span class="k-unit">{html_escape(unit)}</span></span>'
+        f'<span class="k-sub">{html_escape(sub)}</span></a>'
+        for label, value, unit, sub, href in items
+    )
+    return f'<div class="kpis">{cells}</div>'
+
+
+def _summary_html(report: dict[str, Any]) -> str:
+    """聚合统计：按指标域分组，数字右对齐 + 等宽数字。"""
+    summary = report.get("metricsSummary") or {}
+    if not summary:
+        return ""
+    group_of = {key: name for name, keys in _METRIC_GROUPS for key in keys}
+    rows: list[str] = []
+    last_group = None
+    for key in _ordered_keys(summary):
+        entry = summary[key]
+        group = group_of.get(key, "其他")
+        if group != last_group:
+            rows.append(f'<tr class="group"><td colspan="9">{html_escape(group)}</td></tr>')
+            last_group = group
+        rows.append(
+            '<tr><td>{label}</td><td>{unit}</td><td class="mono">{source}</td>'
+            '<td class="num">{min}</td><td class="num">{median}</td><td class="num">{mean}</td>'
+            '<td class="num">{max}</td><td class="num">{p90}</td><td class="num">{count}</td></tr>'.format(
                 label=html_escape(
                     _bilingual(entry.get("labelZh"), entry.get("labelEn"), key)
                 ),
@@ -464,43 +886,95 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
                 count=entry.get("sampleCount", ""),
             )
         )
+    return (
+        "<h2>聚合统计 / Aggregates</h2>"
+        '<table class="summary-table">'
+        '<tr><th>指标</th><th>单位</th><th>来源</th><th class="num">min</th>'
+        '<th class="num">median</th><th class="num">mean</th>'
+        '<th class="num">max</th><th class="num">p90</th><th class="num">样本数</th></tr>'
+        f"{''.join(rows)}</table>"
+    )
 
+
+def _charts_grid_html(report: dict[str, Any]) -> tuple[str, str]:
+    """曲线网格：同图（宽卡）在前，单指标两列网格；返回 (网格 HTML, 同图脚本)。"""
+    series = report.get("series") or {}
+    if not series:
+        return "", ""
+    combined_div, combined_script = _combined_thermal_markup(series)
+    figures = []
+    for key in _ordered_keys(series):
+        item = series[key]
+        figures.append(
+            '<figure class="chart-card"><figcaption>'
+            f'<span class="c-label">{html_escape(str(item.get("labelZh") or key))}</span>'
+            f'<span class="c-en">{html_escape(str(item.get("labelEn") or ""))}</span>'
+            f'<span class="c-unit">{html_escape(str(item.get("unit") or ""))}</span>'
+            f'<span class="c-src">{html_escape(str(item.get("source") or ""))}</span>'
+            "</figcaption>"
+            f'<div class="chart" id="chart-{html_escape(key)}"></div></figure>'
+        )
+    grid = f'<div class="chart-grid">{combined_div}{"".join(figures)}</div>'
+    return "<h2>指标曲线 / Trends</h2>" + grid, combined_script
+
+
+def _meta_html(report: dict[str, Any], run_dir: str | Path) -> str:
     meta_rows = "".join(
         f"<tr><td>{html_escape(name)}</td>"
         f"<td>{value if name.startswith(('产物', '报告产物')) else html_escape(value)}</td></tr>"
         for name, value in _meta_rows(report, run_dir)
     )
-    chart_divs = "".join(
-        f'<div class="chart" id="chart-{html_escape(key)}"></div>'
-        for key in sorted(report.get("series") or {})
+    return (
+        "<h2>会话元信息 / Session</h2>"
+        f'<table class="meta">{meta_rows}</table>'
+        + _events_html(report)
     )
-    combined_div, combined_script = _combined_thermal_markup(report.get("series") or {})
 
-    html_text = _HTML_TEMPLATE.format(
-        run_id=html_escape(report["runId"]),
-        meta_rows=meta_rows,
-        startup_markup=_startup_markup(report),
-        page_markup=_page_markup(report),
-        jank_markup=_jank_markup(report),
-        frame_markup=_frame_markup(report),
-        gpu_markup=_gpu_markup(report),
-        network_markup=_network_markup(report),
-        api_markup=_api_markup(report),
-        summary_rows="\n".join(summary_rows),
-        chart_divs=combined_div + chart_divs,
-        echarts_js=echarts_js,
-        report_json=report_json,
-        combined_script=combined_script,
+
+def _events_html(report: dict[str, Any]) -> str:
+    """事件列表（折叠）：只展示 store 已落盘的事件，不新增数据。"""
+    events = report.get("events") or []
+    if not events:
+        return ""
+    rows = []
+    for ev in sorted(events, key=lambda e: str(e.get("ts") or "")):
+        kind = str(ev.get("kind") or "")
+        rows.append(
+            f'<tr><td class="mono">{html_escape(str(ev.get("ts") or ""))}</td>'
+            f'<td><span class="badge muted">{html_escape(kind)}</span></td>'
+            f"<td>{html_escape(_event_summary(kind, ev.get('detail') or {}))}</td></tr>"
+        )
+    return (
+        f'<details class="event-list"><summary>事件 / Events（{len(events)}）</summary>'
+        "<table><tr><th>时间 / Time</th><th>类型 / Kind</th><th>摘要 / Detail</th></tr>"
+        f"{''.join(rows)}</table></details>"
     )
-    # 启动点标记按需注入（占位符在 format 之后替换，避免花括号转义）
-    html_text = html_text.replace("__STARTUP_MARKLINE__", _startup_markline_script(report))
-    html_text = html_text.replace("__PAGE_MARKLINE__", _page_markline_script(report))
-    html_text = html_text.replace(
-        "__JANK_THRESHOLD_LINE__", _jank_threshold_line_script(report)
-    )
-    path = Path(run_dir) / "report.html"
-    path.write_text(html_text, encoding="utf-8")
-    return path
+
+
+def _event_summary(kind: str, detail: dict[str, Any]) -> str:
+    if kind == "startup":
+        if detail.get("ms") is not None:
+            return f"{detail.get('mode')} {_fmt(detail['ms'])} ms"
+        return f"启动失败：{detail.get('error') or '未知原因'}"
+    if kind == "foreground":
+        restored = "已恢复" if detail.get("restored") else "未恢复"
+        return (
+            f"{detail.get('phase')}：前台为 {detail.get('observed')}"
+            f"（期望 {detail.get('before')}），{restored}"
+        )
+    if kind == "net_profile":
+        profile = detail.get("profile") or {}
+        effective = "生效" if detail.get("effective") else "未生效"
+        return f"档位 {profile.get('name')} / {detail.get('tier')}，{effective}"
+    if kind == "mark":
+        return str(detail.get("label") or "")
+    if kind == "page_load":
+        return f"{detail.get('page')} {_fmt(detail.get('pageLoadMs'))} ms"
+    if kind == "capture_har":
+        return f"HAR {detail.get('status')}，{detail.get('entries', 0)} 条"
+    if kind == "integrity_warning":
+        return str(detail.get("reason") or "")
+    return json.dumps(detail, ensure_ascii=False)
 
 
 _COMBINED_CHART_ID = "chart-combined-thermal-fps"
@@ -509,58 +983,94 @@ _COMBINED_CHART_ID = "chart-combined-thermal-fps"
 # 时间轴（§6.3）。单位必须分组——把 °C、%、MB 挤在同一条轴上会让人误读量级。
 _COMBINED_SCRIPT = """<script>
 (function () {
+  var viz = window.__perfViz;
   var report = window.__REPORT__ || {};
   var series = report.series || {};
   var startup = report.startup || null;
   var fps = series["fps_frame"];
-  var supplement = [series["temp_battery_c"], series["gpu_util_pct"],
-                    series["gpu_mem_mb"]].filter(Boolean);
-  if (!fps || supplement.length === 0 || typeof echarts === "undefined") return;
+  var supplement = [["temp_battery_c", series["temp_battery_c"]],
+                    ["gpu_util_pct", series["gpu_util_pct"]],
+                    ["gpu_mem_mb", series["gpu_mem_mb"]]].filter(function (pair) { return pair[1]; });
+  if (!viz || !fps || supplement.length === 0 || typeof echarts === "undefined") return;
   var el = document.getElementById("__CHART_ID__");
   if (!el) return;
   var chart = echarts.init(el);
+  var COLORS = { fps_frame: "#2f5fd0", temp_battery_c: "#c93a32",
+                 gpu_util_pct: "#0e8f6e", gpu_mem_mb: "#7a4fd0" };
+  var notes = [];
+  function cappedAxis(unit, label, points, position, offset) {
+    var axis = viz.axisStyle(unit);
+    axis.position = position;
+    if (offset) axis.offset = offset;
+    if (position === "right") axis.splitLine = { show: false };
+    var cap = viz.axisCap(points);
+    if (cap) {
+      axis.max = cap.max;
+      notes.push(label + " 截断至 " + cap.max + " " + unit + "（" + cap.outliers +
+        " 个离群点，真实最大 " + cap.trueMax + " " + unit + "）");
+    }
+    return axis;
+  }
   var lines = [{
     name: fps.labelZh + " (" + fps.unit + ")", type: "line", showSymbol: false, yAxisIndex: 0,
+    lineStyle: { width: 1.6 }, itemStyle: { color: COLORS.fps_frame },
     data: fps.points.map(function (p) { return [p[0], p[1]]; })
   }];
 __STARTUP_MARKLINE__
 __PAGE_MARKLINE__
-  var axes = [{ type: "value", name: fps.unit }];
+  var axes = [cappedAxis(fps.unit, fps.labelZh, fps.points, "left", 0)];
   var axisByUnit = {};
   axisByUnit[fps.unit] = 0;
-  supplement.forEach(function (item) {
+  supplement.forEach(function (pair) {
+    var key = pair[0], item = pair[1];
     if (axisByUnit[item.unit] === undefined) {
       axisByUnit[item.unit] = axes.length;
-      axes.push({ type: "value", name: item.unit });
+      axes.push(cappedAxis(item.unit, item.labelZh, item.points, "right", (axes.length - 1) * 48));
     }
     lines.push({
       name: item.labelZh + " (" + item.unit + ")", type: "line", showSymbol: false,
-      yAxisIndex: axisByUnit[item.unit],
+      yAxisIndex: axisByUnit[item.unit], lineStyle: { width: 1.6 },
+      itemStyle: { color: COLORS[key] },
       data: item.points.map(function (p) { return [p[0], p[1]]; })
     });
   });
   chart.setOption({
-    title: { text: "温度-帧率-显存同图（统一时间轴）", textStyle: { fontSize: 13 } },
-    tooltip: { trigger: "axis" },
-    legend: { top: 22 },
-    xAxis: { type: "value", name: "s" },
+    tooltip: viz.tooltip,
+    legend: { top: 0, textStyle: { color: "#5b6672", fontSize: 11 } },
+    xAxis: viz.xAxis,
     yAxis: axes,
     series: lines,
-    grid: { left: 60, right: 60, top: 60, bottom: 40 }
+    dataZoom: [{ type: "inside", xAxisIndex: 0 }],
+    toolbox: viz.toolbox("combined-thermal-fps"),
+    grid: { left: 52, right: 16 + 48 * (axes.length - 1), top: 34, bottom: 30 }
   });
+  if (notes.length) {
+    var p = document.createElement("p");
+    p.className = "chart-note";
+    p.textContent = "纵轴已截断：" + notes.join("；") + "。数据未改动。";
+    el.parentNode.insertBefore(p, el.nextSibling);
+  }
+  (window.__perfCharts = window.__perfCharts || []).push(chart);
 })();
 </script>"""
 
 
 def _combined_thermal_markup(series: dict[str, Any]) -> tuple[str, str]:
-    """有帧率且有补采曲线时返回（同图 div，同图脚本）；否则返回空串。"""
+    """有帧率且有补采曲线时返回（同图宽卡，同图脚本）；否则返回空串。"""
     has_fps = "fps_frame" in series
     has_supplement = any(
         key in series for key in ("temp_battery_c", "gpu_util_pct", "gpu_mem_mb")
     )
     if not (has_fps and has_supplement):
         return "", ""
-    div = f'<h2>温度-帧率同图</h2><div class="chart" id="{_COMBINED_CHART_ID}"></div>'
+    div = (
+        '<figure class="chart-card chart-wide"><figcaption>'
+        '<span class="c-label">温度-帧率同图</span>'
+        '<span class="c-en">Thermal / FPS / GPU（统一时间轴）</span>'
+        '<span class="c-src">solo_pi + pc_supplement</span>'
+        "</figcaption>"
+        f'<div class="chart" id="{_COMBINED_CHART_ID}"></div></figure>'
+    )
     return div, _COMBINED_SCRIPT.replace("__CHART_ID__", _COMBINED_CHART_ID)
 
 
@@ -577,12 +1087,17 @@ def _page_markup(report: dict[str, Any]) -> str:
     for item in pages.get("pages") or []:
         status = str(item.get("status") or "")
         value = item.get("pageLoadMs")
+        status_kind = {"ok": "ok", "timeout": "warn"}.get(status, "muted")
+        status_cell = (
+            f'<span class="badge {status_kind}">'
+            f"{html_escape(_PAGE_STATUS_TEXT.get(status, status))}</span>"
+        )
         rows.append(
-            "<tr><td>{page}</td><td>{value}</td><td>{status}</td><td>{frames}</td>"
-            "<td>{reason}</td></tr>".format(
+            '<tr><td>{page}</td><td class="num">{value}</td><td>{status}</td>'
+            '<td class="num">{frames}</td><td>{reason}</td></tr>'.format(
                 page=html_escape(str(item.get("page") or "")),
                 value=_fmt(value) if value is not None else "not_tested",
-                status=html_escape(_PAGE_STATUS_TEXT.get(status, status)),
+                status=status_cell,
                 frames=item.get("frameCount", ""),
                 reason=html_escape(str(item.get("reason") or "")),
             )
@@ -599,8 +1114,9 @@ def _page_markup(report: dict[str, Any]) -> str:
             offset_text += f"，误差不超过 ±{pages['clockPrecisionMs']} ms（半个 adb 往返）"
     parts = [
         "<h2>整页加载耗时 / Page load</h2>",
-        '<table class="page-load"><tr><th>页面 / Page</th><th>整页耗时 / Load (ms)</th>'
-        "<th>判定 / Status</th><th>帧数 / Frames</th><th>说明 / Note</th></tr>"
+        '<table class="page-load"><tr><th>页面 / Page</th>'
+        '<th class="num">整页耗时 / Load (ms)</th>'
+        '<th>判定 / Status</th><th class="num">帧数 / Frames</th><th>说明 / Note</th></tr>'
         f"{''.join(rows)}</table>",
         "<p>口径：从页面打标到画面进入稳定的耗时（首个连续 "
         f"≥{html_escape(str(pages.get('quietGapMs', '')))} ms 无新帧的窗口起点）；"
@@ -635,7 +1151,8 @@ def _page_markline_script(report: dict[str, Any]) -> str:
     var mark = {
       symbol: "none",
       lineStyle: { color: "#2f7d32", type: "dashed" },
-      label: { formatter: function (p) { return p.name; }, fontSize: 10 },
+      label: { formatter: function (p) { return p.name; }, fontSize: 10,
+        position: "end", align: "left", verticalAlign: "bottom", distance: 2 },
       data: points.map(function (p) {
         return { xAxis: p.s, name: p.page + " " + p.ms + " ms" };
       })
@@ -666,8 +1183,8 @@ def _gpu_markup(report: dict[str, Any]) -> str:
     summary = report.get("metricsSummary") or {}
     gpu = report.get("gpu") or {}
     rows = [
-        "<tr><td>{label}</td><td>{median}</td><td>{p90}</td><td>{max}</td>"
-        "<td>{count}</td><td>{unit}</td></tr>".format(
+        '<tr><td>{label}</td><td class="num">{median}</td><td class="num">{p90}</td>'
+        '<td class="num">{max}</td><td class="num">{count}</td><td>{unit}</td></tr>'.format(
             label=html_escape(_bilingual(entry.get("labelZh"), entry.get("labelEn"), key)),
             median=_fmt(entry.get("median")),
             p90=_fmt(entry.get("p90")),
@@ -691,8 +1208,9 @@ def _gpu_markup(report: dict[str, Any]) -> str:
     }.get(source or "", "未取得")
     parts = [
         "<h2>GPU / GPU</h2>",
-        '<table class="gpu-stats"><tr><th>指标 / Metric</th><th>中位 / Median</th>'
-        "<th>P90</th><th>最大 / Max</th><th>样本 / Samples</th><th>单位 / Unit</th></tr>"
+        '<table class="gpu-stats"><tr><th>指标 / Metric</th><th class="num">中位 / Median</th>'
+        '<th class="num">P90</th><th class="num">最大 / Max</th>'
+        '<th class="num">样本 / Samples</th><th>单位 / Unit</th></tr>'
         f"{''.join(rows)}</table>",
         f"<p>数据源 / Source：{source_text}。"
         "利用率与显存只报聚合（median/p90/max），不承诺逐点序列与真实瞬时负载对齐。"
@@ -726,7 +1244,8 @@ def _startup_markline_script(report: dict[str, Any]) -> str:
     var mark = {
       symbol: "none",
       lineStyle: { color: "#d0483e", type: "dashed" },
-      label: { formatter: "启动 " + startup.ms + " ms", fontSize: 10 },
+      label: { formatter: "启动 " + startup.ms + " ms", fontSize: 10,
+        position: "end", align: "left", verticalAlign: "bottom", distance: 2 },
       data: [{ xAxis: startup.elapsedS }]
     };
     if (typeof option !== "undefined") { option.series[0].markLine = mark; }
@@ -747,7 +1266,8 @@ def _startup_markup(report: dict[str, Any]) -> str:
     ms = startup.get("ms")
     if ms is None:
         return (
-            f'<h2>启动时间 / Startup</h2><p>{header}：启动失败——'
+            '<h2>启动时间 / Startup</h2>'
+            f'<p><span class="badge danger">启动失败</span> {header}：'
             f"{html_escape(str(startup.get('error') or '未知原因'))}</p>"
         )
     bits: list[str] = []
@@ -763,9 +1283,12 @@ def _startup_markup(report: dict[str, Any]) -> str:
         bits.append(f"启动点 {startup['elapsedS']} s")
     detail = "；".join(html_escape(bit) for bit in bits)
     return (
-        f'<h2>启动时间 / Startup</h2><p>{header}：<b>{_fmt(ms)} ms</b>'
-        + (f"（{detail}）" if detail else "")
-        + "</p>"
+        '<h2>启动时间 / Startup</h2>'
+        '<div class="stat-line">'
+        f'<span class="stat-value">{_fmt(ms)}</span><span class="stat-unit">ms</span>'
+        f'<span class="stat-label">{header}</span>'
+        "</div>"
+        + (f"<p>{detail}</p>" if detail else "")
     )
 
 
@@ -803,7 +1326,9 @@ def _jank_markup(report: dict[str, Any]) -> str:
         zh, en = _JANK_GRADE_LABELS[grade]
         label = f"{zh}卡顿窗口数(>{_fmt(thresholds[grade])}ms) / {en} jank windows"
         rows.append(
-            "<tr><td>{label}</td><td>{count}</td><td>{samples}</td></tr>".format(
+            '<tr><td><span class="grade-dot {grade}"></span>{label}</td>'
+            '<td class="num">{count}</td><td class="num">{samples}</td></tr>'.format(
+                grade=grade,
                 label=html_escape(label),
                 count=_fmt(entry.get("max")),
                 samples=entry.get("sampleCount", ""),
@@ -811,8 +1336,9 @@ def _jank_markup(report: dict[str, Any]) -> str:
         )
     return (
         "<h2>卡顿分级 / Jank grading</h2>"
-        '<table class="jank-threshold"><tr><th>分级 / Grade</th><th>窗口数 / Windows</th>'
-        "<th>样本数 / Samples</th></tr>{rows}</table>"
+        '<table class="jank-threshold"><tr><th>分级 / Grade</th>'
+        '<th class="num">窗口数 / Windows</th>'
+        "<th class=\"num\">样本数 / Samples</th></tr>{rows}</table>"
         "<p>口径 / Method：SoloPi 无逐帧延迟分布，按每个采样窗口的"
         "「最长延迟时间」是否超过阈值计数（分桶互斥，只计最高档）。</p>"
     ).format(rows="\n".join(rows))
@@ -835,7 +1361,7 @@ def _frame_markup(report: dict[str, Any]) -> str:
         ("app_frame_count", "采样帧数 / Sampled frames"),
     )
     rows = [
-        "<tr><td>{label}</td><td>{value}</td><td>{unit}</td></tr>".format(
+        '<tr><td>{label}</td><td class="num">{value}</td><td>{unit}</td></tr>'.format(
             label=html_escape(label),
             value=_fmt((summary.get(key) or {}).get("median")),
             unit=html_escape(str((summary.get(key) or {}).get("unit") or "")),
@@ -858,7 +1384,7 @@ def _frame_markup(report: dict[str, Any]) -> str:
     detail_text = ("；".join(detail) + "。") if detail else ""
     return (
         "<h2>逐帧卡顿 / Per-frame jank</h2>"
-        '<table class="frame-stats"><tr><th>指标 / Metric</th><th>值 / Value</th>'
+        '<table class="frame-stats"><tr><th>指标 / Metric</th><th class="num">值 / Value</th>'
         "<th>单位 / Unit</th></tr>{rows}</table>"
         "<p>数据源 / Source：<code>dumpsys gfxinfo framestats</code>（逐帧，"
         "FrameCompleted − IntendedVsync）。{detail}</p>"
@@ -877,20 +1403,27 @@ def _api_markup(report: dict[str, Any]) -> str:
     top = api.get("top") or []
     if not top:
         return ""
-    rows = [
-        "<tr><td>{host}</td><td>{route}</td><td>{count}</td><td>{median}</td>"
-        "<td>{p90}</td><td>{max}</td><td>{errors}</td><td>{payload}</td></tr>".format(
-            host=html_escape(str(item.get("host") or "")),
-            route=html_escape(str(item.get("route") or "")),
-            count=item.get("count", ""),
-            median=_fmt(item.get("medianMs")),
-            p90=_fmt(item.get("p90Ms")),
-            max=_fmt(item.get("maxMs")),
-            errors=item.get("errors", 0),
-            payload=_fmt(item.get("payloadKb")),
+    rows = []
+    for item in top:
+        errors = item.get("errors", 0)
+        errors_cell = (
+            f'<span class="danger-text">{errors}</span>' if errors else str(errors)
         )
-        for item in top
-    ]
+        rows.append(
+            '<tr><td>{host}</td><td>{route}</td><td class="num">{count}</td>'
+            '<td class="num">{median}</td><td class="num">{p90}</td>'
+            '<td class="num">{max}</td><td class="num">{errors}</td>'
+            '<td class="num">{payload}</td></tr>'.format(
+                host=html_escape(str(item.get("host") or "")),
+                route=html_escape(str(item.get("route") or "")),
+                count=item.get("count", ""),
+                median=_fmt(item.get("medianMs")),
+                p90=_fmt(item.get("p90Ms")),
+                max=_fmt(item.get("maxMs")),
+                errors=errors_cell,
+                payload=_fmt(item.get("payloadKb")),
+            )
+        )
     by_host = api.get("byHost") or {}
     host_text = "；".join(
         f"{html_escape(str(host))}：{count} 次"
@@ -899,8 +1432,9 @@ def _api_markup(report: dict[str, Any]) -> str:
     return (
         "<h2>接口瀑布图 / API waterfall</h2>"
         '<table class="api-waterfall"><tr><th>域名 / Host</th><th>接口 / Route</th>'
-        "<th>请求数 / Count</th><th>中位 / Median (ms)</th><th>P90 (ms)</th>"
-        "<th>最大 / Max (ms)</th><th>错误 / Errors</th><th>响应 / Payload (KB)</th></tr>"
+        '<th class="num">请求数 / Count</th><th class="num">中位 / Median (ms)</th>'
+        '<th class="num">P90 (ms)</th><th class="num">最大 / Max (ms)</th>'
+        '<th class="num">错误 / Errors</th><th class="num">响应 / Payload (KB)</th></tr>'
         f"{''.join(rows)}</table>"
         f"<p>按域名分组 / By host：{host_text}。"
         f"共 {api.get('totalRoutes', len(top))} 个接口路由，错误 {api.get('errors', 0)} 次。"
@@ -953,10 +1487,19 @@ def _network_markup(report: dict[str, Any]) -> str:
                 "，".join(f"{key}={value}" for key, value in restored.items()),
             )
         )
-    body = "\n".join(
-        f"<tr><td>{html_escape(name)}</td><td>{html_escape(str(value))}</td></tr>"
-        for name, value in rows
+    trust_kind = {"trusted": "ok", "rejected": "danger"}.get(
+        str(network.get("trust") or ""), "muted"
     )
+    rendered = []
+    for name, value in rows:
+        cell = html_escape(str(value))
+        if name.startswith("生效"):
+            kind = "ok" if network.get("effective") else "warn"
+            cell = f'<span class="badge {kind}">{cell}</span>'
+        elif name.startswith("信任探测"):
+            cell = f'<span class="badge {trust_kind}">{cell}</span>'
+        rendered.append(f"<tr><td>{html_escape(name)}</td><td>{cell}</td></tr>")
+    body = "\n".join(rendered)
     # APP 抓包（HAR）摘要：只在 network.har 存在时追加；旧 run 无此键时
     # 输出与现版本逐字节一致。链接给相对 run 目录的 network/app.har，
     # 报告 JSON/HTML 均不内嵌 HAR 正文或任何敏感值。
@@ -972,7 +1515,7 @@ def _network_markup(report: dict[str, Any]) -> str:
         '<table class="net-profile"><tr><th>项 / Field</th><th>值 / Value</th></tr>'
         f"{body}</table>"
         f"<p>档位 / Tier：{tier_note}"
-        "生效判定<strong>只看代理侧日志</strong>——被测 App 有本地"
+        "生效判定<strong>只看代理侧日志</strong>：被测 App 有本地"
         "缓存与多域名兜底，页面能打开<strong>不</strong>代表代理生效。</p>"
     )
 
@@ -996,13 +1539,21 @@ def _har_rows_html(har: Any) -> str:
         if har.get("entries") and har.get("path")
         else "无（未创建空 HAR）"
     )
+    status_text = _HAR_STATUS_TEXT.get(status, status)
+    status_kind = {"failed": "danger", "complete": "ok", "partial": "warn"}.get(status, "muted")
+    status_cell = (
+        f'<span class="badge {status_kind}">'
+        + ("⚠️ " if status == "failed" else "")
+        + html_escape(status_text)
+        + "</span>"
+    )
+    redacted_cell = (
+        '<span class="badge ok">是 / yes</span>'
+        if har.get("redacted")
+        else '<span class="badge danger">⚠️ 否 / no（危险：HAR 含敏感原值，勿外传）</span>'
+    )
     rows: list[tuple[str, str]] = [
-        (
-            "HAR / HAR",
-            "⚠️ " + _HAR_STATUS_TEXT["failed"]
-            if status == "failed"
-            else _HAR_STATUS_TEXT.get(status, status),
-        ),
+        ("HAR / HAR", status_cell),
         ("HAR 条目 / HAR entries", str(har.get("entries", 0))),
         ("HAR 产物 / HAR artifact", artifact),
         (
@@ -1013,12 +1564,7 @@ def _har_rows_html(har: Any) -> str:
                 else "仅元数据 / metadata（size + sha256）"
             ),
         ),
-        (
-            "脱敏 / Redacted",
-            "是 / yes"
-            if har.get("redacted")
-            else "⚠️ 否 / no（危险：HAR 含敏感原值，勿外传）",
-        ),
+        ("脱敏 / Redacted", redacted_cell),
         (
             "截断 / Truncated",
             (
@@ -1038,7 +1584,8 @@ def _har_rows_html(har: Any) -> str:
         rows.append(("HAR 不可用原因 / HAR unavailable", str(har["notTestedReason"])))
     rendered = []
     for name, value in rows:
-        cell = value if name.startswith("HAR 产物") else html_escape(value)
+        raw = name.startswith(("HAR 产物", "HAR / HAR", "脱敏 / Redacted"))
+        cell = value if raw else html_escape(value)
         rendered.append(f"<tr><td>{html_escape(name)}</td><td>{cell}</td></tr>")
     return "".join(rendered)
 
@@ -1059,7 +1606,8 @@ def _jank_threshold_line_script(report: dict[str, Any]) -> str:
     thresholds = _jank_thresholds(report)
     lines = ", ".join(
         f'{{ yAxis: {_fmt(thresholds[grade])}, lineStyle: {{ type: "dashed" }}, '
-        f'label: {{ formatter: "{_fmt(thresholds[grade])} ms", fontSize: 10 }} }}'
+        f'label: {{ formatter: "{_fmt(thresholds[grade])} ms", fontSize: 10, '
+        f'position: "insideStartTop" }} }}'
         for grade in jank_module.GRADES
     )
     return (
@@ -1070,7 +1618,7 @@ def _jank_threshold_line_script(report: dict[str, Any]) -> str:
 
 
 def _artifact_links_html(report: dict[str, Any], run_dir: str | Path) -> str:
-    """产物清单单元格：一行一个、相对 report.html 所在目录的链接（与 HAR 产物行同风格）。"""
+    """产物清单单元格：折叠收纳，一行一个相对 report.html 所在目录的链接。"""
     artifacts = report.get("artifacts") or []
     if not artifacts:
         return "无"
@@ -1082,7 +1630,10 @@ def _artifact_links_html(report: dict[str, Any], run_dir: str | Path) -> str:
         except ValueError:
             rel = Path(art).as_posix()
         links.append(f'<a href="{html_escape(rel)}">{html_escape(rel)}</a>')
-    return "<br>".join(links)
+    return (
+        f'<details class="artifact-list"><summary>{len(links)} 个产物文件</summary>'
+        f'<div class="artifact-links">{"<br>".join(links)}</div></details>'
+    )
 
 
 def _report_outputs_html(run_dir: str | Path) -> str:
