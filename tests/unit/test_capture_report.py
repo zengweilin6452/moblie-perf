@@ -144,7 +144,7 @@ def test_assemble_run_report_replays_har_summary_from_meta(tmp_path):
     assert built["network"]["har"]["entries"] == 12
 
 
-def test_har_summary_contains_no_body_or_secret_values():
+def test_har_summary_contains_no_body_or_secret_values(tmp_path):
     """正文里真实存在的敏感串不会出现在摘要/报告里（不是空断言）。"""
     from types import SimpleNamespace
 
@@ -188,3 +188,7 @@ def test_har_summary_contains_no_body_or_secret_values():
     assert "PROBE_SECRET" not in dumped
     assert "text" not in built["network"]["har"]
     assert "request" not in built["network"]["har"]
+
+    # HTML 报告同样不得携带原值（P1-02：JSON 与 HTML 两条产物都查）
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+    assert "PROBE_SECRET" not in html

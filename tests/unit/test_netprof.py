@@ -229,16 +229,19 @@ def test_conn_duration_rows_aggregates_and_skips_empty():
 
 
 class FakeDevice:
-    """记录 adb 调用；按需让某些命令失败。stdout_map 按子串匹配命令。"""
+    """记录 adb 调用；按需让某些命令失败或抛异常。stdout_map 按子串匹配命令。"""
 
-    def __init__(self, failing=(), stdout_map=None):
+    def __init__(self, failing=(), stdout_map=None, raising=()):
         self.calls: list[list[str]] = []
         self.failing = set(failing)
+        self.raising = set(raising)
         self.stdout_map = stdout_map or {}
 
     def __call__(self, args, timeout_s=15.0):
         self.calls.append(list(args))
         joined = " ".join(args)
+        if any(token in joined for token in self.raising):
+            raise ConnectionError(f"adb 连接中断: {joined}")
         code = 1 if any(token in joined for token in self.failing) else 0
         stdout = ""
         for needle, value in self.stdout_map.items():
@@ -1408,3 +1411,271 @@ def test_netprof_does_not_import_mitmproxy_in_process():
 
     assert "import mitmproxy" not in orchestrator
     assert "from mitmproxy" in addon
+
+
+# ---- P1-07：恢复动作彼此独立（设备断连抛异常也不跳过后续清理） ----
+
+def test_stop_restores_independently_when_proxy_restore_raises(tmp_path):
+    """清系统代理抛异常（设备断连）：仍拆 reverse、停进程，失败进 restoreErrors。"""
+    device = FakeDevice(raising=("settings put global http_proxy :0",))
+    profiler = _profiler(device)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    stopped = profiler.stop()  # 不得向上抛
+
+    assert "恢复系统代理失败" in stopped.restore_errors[0]
+    assert stopped.restored["deviceProxy"] is False
+    assert stopped.restored["reverse"] is True  # 后续清理照常执行
+    assert stopped.restored["proxyProcess"] is True
+    commands = device.commands()
+    assert any("reverse --remove tcp:8080" in command for command in commands)
+    assert "restoreErrors" in stopped.as_dict()
+
+
+def test_stop_restores_independently_when_reverse_remove_raises(tmp_path):
+    """拆 reverse 抛异常：系统代理清理已完成、进程照常回收，失败如实记录。"""
+    device = FakeDevice(raising=("reverse --remove",))
+    profiler = _profiler(device)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    stopped = profiler.stop()
+
+    assert "恢复 reverse 失败" in stopped.restore_errors[0]
+    assert stopped.restored["reverse"] is False
+    assert stopped.restored["deviceProxy"] is True  # 前一步照常完成
+    commands = device.commands()
+    assert any(command.endswith("http_proxy :0") for command in commands)
+
+
+def test_rollback_failure_records_error_and_continues(tmp_path):
+    """start 中途失败的回滚单步抛异常：错误随会话记录且不向上抛（P1-07）。
+
+    设置阶段失败触发回滚时 proxy_set 必为 False（设置成功后才置位），可撤销
+    的步骤只有 reverse——其异常被捕获记录，不再打断 start 的失败返回。
+    """
+    device = FakeDevice(
+        failing=("http_proxy 127.0.0.1:8080",),  # 设置阶段失败 → 触发回滚
+        raising=("reverse --remove",),  # 回滚撤销 reverse 时断连
+    )
+    profiler = _profiler(device)
+
+    session = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)  # 不向上抛
+
+    assert "设备系统代理设置失败" in session.setup_errors
+    assert "恢复 reverse 失败" in session.restore_errors[0]
+
+
+# ---- P1-07 复核缺口：非零返回码、资源保留重试 ----
+
+class _FailingStopProcess:
+    """terminate 第一次抛 OSError、之后恢复正常的进程替身（模拟终止失败）。"""
+
+    def __init__(self):
+        self.terminate_calls = 0
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminate_calls += 1
+        if self.terminate_calls == 1:
+            raise OSError("terminate failed")
+
+    def kill(self):
+        raise OSError("kill failed")
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class _RetryDevice:
+    """前 fail_next 次调用返回非零，之后恢复正常（模拟设备短暂断连后恢复）。"""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+        self.fail_next = 0
+
+    def __call__(self, args, timeout_s=15.0):
+        self.calls.append(list(args))
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            return SimpleNamespace(stdout="", returncode=1, stderr="")
+        return SimpleNamespace(stdout="", returncode=0, stderr="")
+
+    def commands(self):
+        return [" ".join(call) for call in self.calls]
+
+
+def test_stop_all_failed_returns_recorded_and_state_kept(tmp_path):
+    """复核注入复现：三项恢复全部返回非零/异常。
+
+    修复前实测：restore_errors 为空、进程引用被清成 None、待恢复状态被无条件
+    解除；修复后：失败逐条记录、状态与引用保留供重试。
+    """
+    device = FakeDevice(failing=("http_proxy :0", "reverse --remove"))
+    profiler = _profiler(device, process=_FailingStopProcess())
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    stopped = profiler.stop()
+
+    assert stopped.restored == {
+        "deviceProxy": False, "reverse": False, "proxyProcess": False,
+    }
+    assert len(stopped.restore_errors) == 3
+    assert any("adb 返回非零" in message for message in stopped.restore_errors)
+    assert any("代理进程终止失败" in message for message in stopped.restore_errors)
+    # 失败不解除待恢复状态，进程引用保留（可重试）
+    assert profiler._session.proxy_set is True
+    assert profiler._session.reverse_set is True
+    assert profiler._session.proxy_started is True
+    assert profiler._process is not None
+    assert "restoreErrors" in stopped.as_dict()
+
+
+def test_failed_restore_retried_by_second_stop(tmp_path):
+    """首次 stop 恢复全部失败后，设备恢复后第二次 stop 重试并解除状态。"""
+    device = _RetryDevice()
+    process = _FailingStopProcess()
+    profiler = _profiler(device, process=process)
+    profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    device.fail_next = 2  # 清代理 + 拆 reverse 两次都失败
+    first = profiler.stop()
+    assert len(first.restore_errors) == 3
+    assert profiler._session.proxy_set is True
+
+    second = profiler.stop()  # 设备已恢复、进程可终止：重试成功
+
+    assert second.restored == {
+        "deviceProxy": True, "reverse": True, "proxyProcess": True,
+    }
+    assert len(second.restore_errors) == 3  # 只增不改：首次失败记录保留
+    assert profiler._session.proxy_set is False
+    assert profiler._session.reverse_set is False
+    assert profiler._session.proxy_started is False
+    assert profiler._process is None
+
+
+def test_rollback_nonzero_return_recorded_and_state_kept(tmp_path):
+    """start 回滚阶段撤销 reverse 返回非零：错误记录、状态保留待重试。"""
+    device = FakeDevice(failing=("http_proxy 127.0.0.1:8080", "reverse --remove"))
+    profiler = _profiler(device)
+
+    session = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    assert "设备系统代理设置失败" in session.setup_errors
+    assert any("adb 返回非零" in message for message in session.restore_errors)
+    assert session.reverse_set is True  # 撤销失败不解除状态，stop() 会重试
+
+
+# ---- 复核缺口回归：启动阶段异常退出后的生命周期状态 ----
+
+class _DiedEarlyProcess(FakeProcess):
+    """一起来就退出的进程替身（启动等待阶段报"提前退出"）；terminate 释放端口。"""
+
+    def __init__(self, release=None):
+        self._release = release
+
+    def poll(self):
+        return 1
+
+    def terminate(self):
+        if self._release is not None:
+            self._release["busy"] = False  # 进程被终止 → 端口释放（与真机行为对齐）
+
+
+def test_spawn_wait_failure_cleanup_failed_keeps_process_for_retry(tmp_path):
+    """进程已创建但启动等待超时、清理终止也失败。
+
+    修复前实测：进程创建后 _proxy_confirmed_stopped 仍是初始 True、
+    proxy_started 仍是 False——HAR 会被错误合成、stop() 无法重试终止。
+    修复后：Popen 后立即进入"已启动、终止未确认"，失败保留状态与引用，
+    stop() 重试终止成功后全部解除。
+    """
+    import itertools
+
+    device = FakeDevice()
+    process = _FailingStopProcess()
+    ticks = itertools.count(start=1)
+
+    profiler = netprof.NetProfiler(
+        adb_path="adb", serial="s1", mitmdump="/fake/mitmdump", call_device=device,
+        popen=lambda _a, **_k: process, sleep=lambda _s: None,
+        now=lambda: float(next(ticks)),
+        probe=lambda _p: "12.3.0", which=lambda _n: None,
+        in_use=lambda _p: False,  # 永不监听 → 启动等待超时
+    )
+
+    session = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)  # 不向上抛
+
+    assert any("代理启动失败" in message for message in session.setup_errors)
+    assert profiler._session.proxy_started is True  # 进程仍在跑
+    assert profiler._proxy_confirmed_stopped is False  # 终止未确认，不得合成 HAR
+    assert profiler._process is not None  # 引用保留，可重试
+    assert any("代理进程终止失败" in message for message in session.restore_errors)
+
+    stopped = profiler.stop()  # 第二次终止成功（_FailingStopProcess 首次必失败）
+
+    assert stopped.restored["proxyProcess"] is True
+    assert profiler._session.proxy_started is False
+    assert profiler._proxy_confirmed_stopped is True
+    assert profiler._process is None
+
+
+def test_spawn_wait_failure_cleanup_success_allows_restart(tmp_path):
+    """启动等待失败但清理成功 → 进程引用释放，允许重新 start。
+
+    修复前实测（复核方）：_stop_proxy 成功但 _process 引用未释放，下一次
+    start() 被"网络剖面已在运行"错误阻止。
+    """
+    import itertools
+
+    device = FakeDevice()
+    state = {"busy": False}
+    popen_calls = {"n": 0}
+
+    def popen(_args, **_kwargs):
+        popen_calls["n"] += 1
+        state["busy"] = True  # 起进程后端口占用
+        if popen_calls["n"] == 1:
+            return _DiedEarlyProcess(release=state)  # 起来就退出 → 启动失败
+        return FakeProcess()  # 第二次启动拿到健康进程
+
+    ticks = itertools.count(start=1)
+    profiler = netprof.NetProfiler(
+        adb_path="adb", serial="s1", mitmdump="/fake/mitmdump", call_device=device,
+        popen=popen, sleep=lambda _s: None, now=lambda: float(next(ticks)),
+        probe=lambda _p: "12.3.0", which=lambda _n: None,
+        in_use=lambda _p: state["busy"],
+    )
+
+    first = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    assert any("代理启动失败" in message for message in first.setup_errors)
+    assert profiler._process is None  # 清理成功释放引用（修复前：保留 → start 被阻止）
+    assert profiler._session.proxy_started is False
+    assert profiler._proxy_confirmed_stopped is True
+
+    second = profiler.start(netprof.build_profile("none"), work_dir=tmp_path)  # 不再被阻止
+
+    assert second.applied is True
+    stopped = profiler.stop()
+    assert stopped.restored["deviceProxy"] is True
+
+
+def test_rollback_confirms_proxy_stopped_for_compose_gate(tmp_path):
+    """复核缺口：_rollback() 终止代理成功时必须同步 _proxy_confirmed_stopped。
+
+    修复前实测：进程终止成功、引用释放、proxy_started=False，但
+    _proxy_confirmed_stopped 停留 False——该失败会话的 HAR 合成门
+    （enabled ∧ 未合成 ∧ 确认终止）永远无法满足，HAR 停在占位。
+    """
+    device = FakeDevice(failing=("reverse tcp:8080 tcp:8080",))  # reverse 失败 → 回滚
+    profiler = _profiler(device)
+
+    session = profiler.start(netprof.build_profile("weak"), work_dir=tmp_path)
+
+    assert session.applied is False
+    assert profiler._session.proxy_started is False  # 终止成功已解除
+    assert profiler._process is None  # 引用已释放
+    assert profiler._proxy_confirmed_stopped is True  # 合成门条件齐备

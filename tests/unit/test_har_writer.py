@@ -343,9 +343,56 @@ def test_har_summary_dict_covers_all_contract_fields():
         "truncated",
         "truncatedReason",
         "droppedEntries",
+        "droppedEvents",
+        "countersSource",
         "skippedEntries",
         "writerErrors",
         "httpsCoverage",
         "notTestedReason",
     }
     assert payload["status"] == "partial"
+
+
+# ---- P1-02：URL 型头脱敏边界（Refresh 前缀/引号/fragment） ----
+
+def test_refresh_header_url_is_scrubbed_and_prefix_kept():
+    """Refresh 的 URL 段脱敏、非 URL 前缀原样；常见变体逐个钉住口径。"""
+    cases = [
+        ("5; url=http://x.test/?token=PROBE_SECRET",
+         "5; url=http://x.test/?token=[REDACTED]"),
+        ("0;url=/rel?token=PROBE_SECRET", "0;url=/rel?token=[REDACTED]"),
+        # 尾引号属于值段，随敏感值一并被替换（宁多脱不漏脱）
+        ("5; url='http://x.test/?token=PROBE_SECRET'",
+         "5; url='http://x.test/?token=[REDACTED]"),
+        ("5", "5"),  # 无 URL 的 Refresh 原样保留，不改前缀
+        ("10; url=https://x.test/cb#access_token=PROBE_SECRET",
+         "10; url=https://x.test/cb#access_token=[REDACTED]"),
+    ]
+    for raw, expected in cases:
+        cleaned = har_writer.scrub_headers([("Refresh", raw)], redact=True)[0]
+        assert cleaned == {"name": "Refresh", "value": expected}
+
+
+def test_url_headers_untouched_when_redact_disabled():
+    """危险模式（redact=False）：URL 型头原样保留，由报告层显式标注危险。"""
+    raw = "5; url=http://x.test/?token=PROBE_SECRET"
+    cleaned = har_writer.scrub_headers([("Refresh", raw)], redact=False)[0]
+    assert cleaned == {"name": "Refresh", "value": raw}
+
+
+def test_fragment_params_are_redacted_like_query():
+    """OAuth 隐式流把 token 放 fragment：URL 型头不得原样落盘（修复前实测泄漏）。"""
+    url = har_writer.scrub_url(
+        "https://x.test/callback#access_token=PROBE_SECRET&foo=bar"
+    )
+    assert "PROBE_SECRET" not in url
+    assert "access_token=[REDACTED]" in url
+    assert "foo=bar" in url
+    # 非键值形态的锚点不改动
+    assert har_writer.scrub_url("https://x.test/docs#section-2") == (
+        "https://x.test/docs#section-2"
+    )
+    # query 行为不回退
+    assert har_writer.scrub_url("https://x.test/a?token=PROBE_SECRET#top").endswith(
+        "token=[REDACTED]#top"
+    )

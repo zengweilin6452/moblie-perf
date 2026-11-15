@@ -46,7 +46,7 @@ class FakeProcess:
         self.killed = True
 
 
-def _profiler(device, *, available=True, port_busy=False):
+def _profiler(device, *, available=True, port_busy=False, env=None, capture=None):
     state = {"busy": port_busy}
     calls = []
 
@@ -67,7 +67,8 @@ def _profiler(device, *, available=True, port_busy=False):
         probe=lambda _p: "12.3.0" if available else None,
         which=lambda _n: None,
         in_use=lambda _port: state["busy"],
-        capture=CaptureOptions(enabled=True),
+        env=env,
+        capture=CaptureOptions(enabled=True) if capture is None else capture,
     )
     profiler.popen_calls = calls
     return profiler
@@ -227,6 +228,8 @@ def test_session_as_dict_includes_har_contract_fields(tmp_path):
         "truncated",
         "truncatedReason",
         "droppedEntries",
+        "droppedEvents",
+        "countersSource",
         "skippedEntries",
         "writerErrors",
         "httpsCoverage",
@@ -259,6 +262,7 @@ def test_proxy_log_remains_the_only_evidence_when_har_has_no_entries(tmp_path):
 
 
 def test_har_writer_degradation_events_are_reflected_in_summary(tmp_path):
+    """旧格式日志（无累计字段）按事件条数推算，来源如实标 proxy_log。"""
     profiler = _profiler(FakeDevice())
     profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
     _write_entries(tmp_path)
@@ -275,6 +279,8 @@ def test_har_writer_degradation_events_are_reflected_in_summary(tmp_path):
     stopped = profiler.stop()
 
     assert stopped.har.dropped_entries == 1
+    assert stopped.har.dropped_events == 1
+    assert stopped.har.counters_source == "proxy_log"
     assert stopped.har.truncated is True
     assert stopped.har.truncated_reason == "max_entries"
     assert stopped.har.writer_errors == 1
@@ -352,9 +358,12 @@ def _install_fake_mitmproxy(monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
 
 
-def _load_addon(monkeypatch, tmp_path, *, tier="passthrough", max_entries=5000):
+def _load_addon(
+    monkeypatch, tmp_path, *, tier="passthrough", max_entries=5000, har=True,
+    entries_path=None,
+):
     _install_fake_mitmproxy(monkeypatch)
-    entries = tmp_path / "app.har.entries.jsonl"
+    entries = Path(entries_path) if entries_path else tmp_path / "app.har.entries.jsonl"
     log = tmp_path / "net_proxy.jsonl"
     config = {
         "entriesPath": str(entries),
@@ -365,8 +374,9 @@ def _load_addon(monkeypatch, tmp_path, *, tier="passthrough", max_entries=5000):
         "redact": True,
         "maxHashBytes": 8 * 1024 * 1024,
     }
-    monkeypatch.setenv("MOBILE_PERF_HAR", json.dumps(config, ensure_ascii=False))
-    monkeypatch.setenv("MOBILE_PERF_HAR_ENTRIES", str(entries))
+    if har:
+        monkeypatch.setenv("MOBILE_PERF_HAR", json.dumps(config, ensure_ascii=False))
+        monkeypatch.setenv("MOBILE_PERF_HAR_ENTRIES", str(entries))
     monkeypatch.setenv("MOBILE_PERF_NETLOG", str(log))
     monkeypatch.setenv("MOBILE_PERF_NETTIER", tier)
     monkeypatch.setenv("MOBILE_PERF_NETPARAMS", "{}")
@@ -509,3 +519,324 @@ def test_init_error_is_reported_as_failed_not_zero_requests(tmp_path):
     assert "init:" in stopped.har.not_tested_reason
     assert stopped.har.path is None
     assert not (tmp_path / "app.har").exists()
+
+
+# ---- P0-02：HAR 环境变量隔离（父进程残留不得泄漏给子进程） ----
+
+_RESIDUAL_ENV = {
+    "PATH": "/usr/bin",
+    "LANG": "zh_CN.UTF-8",
+    "MOBILE_PERF_HAR": json.dumps({"entriesPath": "D:/other-run/app.har.entries.jsonl"}),
+    "MOBILE_PERF_HAR_ENTRIES": "D:/other-run/app.har.entries.jsonl",
+}
+
+
+def test_disabled_capture_strips_residual_har_env(tmp_path):
+    """关闭抓包时，外层传入的残留 HAR 变量不得传给 mitmproxy 子进程。"""
+    profiler = _profiler(
+        FakeDevice(), env=dict(_RESIDUAL_ENV), capture=CaptureOptions(enabled=False)
+    )
+
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+
+    _args, kwargs = profiler.popen_calls[0]
+    env = kwargs["env"]
+    assert "MOBILE_PERF_HAR" not in env
+    assert "MOBILE_PERF_HAR_ENTRIES" not in env
+    # 用户无关环境变量原样保留
+    assert env["PATH"] == "/usr/bin"
+    assert env["LANG"] == "zh_CN.UTF-8"
+
+
+def test_disabled_capture_strips_residual_har_env_from_os_environ(monkeypatch, tmp_path):
+    """默认构造（env=None 继承 os.environ）同样要先清除残留。"""
+    monkeypatch.setenv(
+        "MOBILE_PERF_HAR", json.dumps({"entriesPath": "D:/other-run/e.jsonl"})
+    )
+    monkeypatch.setenv("MOBILE_PERF_HAR_ENTRIES", "D:/other-run/e.jsonl")
+    profiler = _profiler(FakeDevice(), capture=CaptureOptions(enabled=False))
+
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+
+    _args, kwargs = profiler.popen_calls[0]
+    assert "MOBILE_PERF_HAR" not in kwargs["env"]
+    assert "MOBILE_PERF_HAR_ENTRIES" not in kwargs["env"]
+
+
+def test_enabled_capture_overrides_residual_har_env(tmp_path):
+    """开启抓包时残留值被当前 run 的配置覆盖，两个变量一致且指向本 run。"""
+    profiler = _profiler(FakeDevice(), env=dict(_RESIDUAL_ENV))
+
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+
+    _args, kwargs = profiler.popen_calls[0]
+    env = kwargs["env"]
+    config = json.loads(env["MOBILE_PERF_HAR"])
+    assert config["entriesPath"] == env["MOBILE_PERF_HAR_ENTRIES"]
+    assert "other-run" not in env["MOBILE_PERF_HAR_ENTRIES"]
+    assert env["MOBILE_PERF_HAR_ENTRIES"] == str(tmp_path / "app.har.entries.jsonl")
+
+
+def test_managed_net_env_always_from_current_run(tmp_path):
+    """NETPARAMS/NETTIER/NETLOG 由当前 run 无条件覆盖，残留值不生效。"""
+    profiler = _profiler(
+        FakeDevice(),
+        env={
+            **_RESIDUAL_ENV,
+            "MOBILE_PERF_NETTIER": "bogus-tier",
+            "MOBILE_PERF_NETLOG": "D:/other-run/old.jsonl",
+        },
+        capture=CaptureOptions(enabled=False),
+    )
+
+    profiler.start(netprof.build_profile("3g"), work_dir=tmp_path)
+
+    _args, kwargs = profiler.popen_calls[0]
+    env = kwargs["env"]
+    assert env["MOBILE_PERF_NETTIER"] == profiler.tier  # 当前 run 档位，非残留值
+    assert env["MOBILE_PERF_NETLOG"] == str(tmp_path / netprof.LOG_FILENAME)
+    params = json.loads(env["MOBILE_PERF_NETPARAMS"])
+    assert params and all(v is not None for v in params.values())
+
+
+# ---- P0-03/P0-04：节流日志 + writer 状态文件 → 精确计数恢复 ----
+
+def test_compose_recovers_exact_drops_from_writer_state(tmp_path):
+    """maxEntries=2 实际写入 25 条：状态文件恢复精确丢弃 23，日志仅 1 条节流事件。"""
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+    _write_entries(tmp_path, count=2)
+    (tmp_path / "app.har.entries.jsonl.state.json").write_text(
+        json.dumps(
+            {"droppedEntries": 23, "writerErrors": 0, "truncatedReason": "max_entries"}
+        ),
+        encoding="utf-8",
+    )
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {"ev": "har_dropped", "reason": "max_entries", "dropped": 1, "truncated": True},
+        ],
+    )
+
+    stopped = profiler.stop()
+
+    assert stopped.har.dropped_entries == 23  # 不是节流事件推出的 1
+    assert stopped.har.dropped_events == 1
+    assert stopped.har.counters_source == "writer_state"
+    assert stopped.har.truncated is True
+    assert stopped.har.truncated_reason == "max_entries"
+    har = json.loads((tmp_path / "app.har").read_text(encoding="utf-8"))
+    assert len(har["log"]["entries"]) == 2
+
+
+def test_old_format_drop_events_fall_back_to_event_count(tmp_path):
+    """旧格式（无累计字段）按事件条数推算，countersSource 如实标 proxy_log。"""
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+    _write_entries(tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {"ev": "har_dropped", "reason": "max_bytes"},
+            {"ev": "har_dropped", "reason": "max_bytes"},
+        ],
+    )
+
+    stopped = profiler.stop()
+
+    assert stopped.har.dropped_entries == 2
+    assert stopped.har.dropped_events == 2
+    assert stopped.har.counters_source == "proxy_log"
+    assert stopped.har.truncated_reason == "max_bytes"
+
+
+def test_cumulative_error_events_recover_writer_errors(tmp_path):
+    """har_error 带 errors 累计字段时按累计恢复；无状态文件时来源标 proxy_log。"""
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+    _write_entries(tmp_path)
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {"ev": "har_error", "error": "disk full", "errors": 1},
+            {"ev": "har_error", "error": "disk full", "errors": 100},
+        ],
+    )
+
+    stopped = profiler.stop()
+
+    assert stopped.har.writer_errors == 100
+    assert stopped.har.counters_source == "proxy_log"
+    assert stopped.har.status == netprof.STATUS_COMPLETE  # 运行时失败不是 init 失败
+
+
+def test_state_file_overrides_cumulative_and_keeps_log_reason(tmp_path):
+    """状态文件计数与日志累计并存时取大者；reason 缺失时回退状态文件里的值。"""
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+    _write_entries(tmp_path, count=2)
+    (tmp_path / "app.har.entries.jsonl.state.json").write_text(
+        json.dumps({"droppedEntries": 5, "writerErrors": 2,
+                    "truncatedReason": "max_bytes"}),
+        encoding="utf-8",
+    )
+    _write_log(
+        tmp_path,
+        [
+            {"ev": "trust_probe", "ok": True, "host": "api.test"},
+            {"ev": "http_request", "fid": "f1", "host": "api.test", "path": "/a"},
+            {"ev": "har_dropped", "reason": "max_entries", "dropped": 100},
+        ],
+    )
+
+    stopped = profiler.stop()
+
+    assert stopped.har.dropped_entries == 100  # max(状态 5, 日志累计 100)
+    assert stopped.har.writer_errors == 2
+    assert stopped.har.truncated_reason == "max_entries"  # 日志 reason 优先
+    assert stopped.har.counters_source == "writer_state"
+
+
+def test_addon_persists_exact_drop_count_to_state_file(tmp_path, monkeypatch):
+    """addon 状态文件承载节流窗口内的精确丢弃数：maxEntries=2 写 25 条 → 23。"""
+    module, entries, log = _load_addon(monkeypatch, tmp_path, max_entries=2)
+    try:
+        for index in range(25):
+            module.response(_flow(f"http://127.0.0.1/{index}"))
+    finally:
+        _close_addon(module)
+
+    state = json.loads(
+        (tmp_path / "app.har.entries.jsonl.state.json").read_text(encoding="utf-8")
+    )
+    assert state["droppedEntries"] == 23
+    assert state["truncatedReason"] == "max_entries"
+    assert len(entries.read_text(encoding="utf-8").splitlines()) == 2
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    drops = [event for event in events if event["ev"] == "har_dropped"]
+    assert len(drops) == 1 and drops[0]["dropped"] == 1  # 日志节流仍在
+
+
+def test_addon_writer_failure_flood_is_throttled(tmp_path, monkeypatch):
+    """writer 持续失败 120 次：日志仅 2 条 har_error（首条+第100条），状态记满 120。"""
+    module, entries, log = _load_addon(monkeypatch, tmp_path)
+    try:
+        assert module._HAR_WRITER is not None
+        module._HAR_WRITER._handle.close()  # 模拟句柄失效（磁盘满/管道断）
+        for index in range(120):
+            module.response(_flow(f"http://127.0.0.1/{index}"))
+    finally:
+        _close_addon(module)
+
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    errors = [event for event in events if event["ev"] == "har_error"]
+    assert len(errors) == 2  # 有明确上限：1 + total//100
+    assert errors[0]["errors"] == 1
+    assert errors[1]["errors"] == 100
+    state = json.loads(
+        (tmp_path / "app.har.entries.jsonl.state.json").read_text(encoding="utf-8")
+    )
+    assert state["writerErrors"] == 120
+    assert len(entries.read_text(encoding="utf-8").splitlines()) == 0
+
+
+# ---- P1-01：addon 关键路径隔离回归（不依赖真机/公网） ----
+
+def test_addon_without_har_config_creates_no_writer(tmp_path, monkeypatch):
+    """HAR 关闭（无 MOBILE_PERF_HAR）时不创建 writer，转发路径与 params 事件正常。"""
+    module, entries, log = _load_addon(monkeypatch, tmp_path, har=False)
+    try:
+        assert module._HAR_WRITER is None
+        module.load(None)  # mitmproxy 启动时调用：params 事件记录 harEnabled=False
+        module.response(_flow())  # 抓包关闭不影响代理事件流
+        module.error(_flow(response=False))
+    finally:
+        _close_addon(module)
+
+    assert not entries.exists()
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    kinds = [event["ev"] for event in events]
+    assert "har_error" not in kinds and "har_dropped" not in kinds
+    assert kinds[0] == "params" and events[0]["harEnabled"] is False
+
+
+def test_addon_har_init_failure_emits_init_error_and_keeps_forwarding(
+    tmp_path, monkeypatch
+):
+    """writer 初始化失败：init: har_error 落日志，代理事件流不受影响。"""
+    # entriesPath 指向已存在的目录 → HarWriter open("a") 失败，走 _init_har 异常分支
+    module, _entries, log = _load_addon(monkeypatch, tmp_path, entries_path=tmp_path)
+    try:
+        assert module._HAR_WRITER is None
+        module.error(_flow(response=False))  # 初始化失败绝不阻断转发事件流
+    finally:
+        _close_addon(module)
+
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    init_errors = [
+        event for event in events
+        if event["ev"] == "har_error" and str(event.get("error", "")).startswith("init:")
+    ]
+    assert len(init_errors) == 1
+    kinds = [event["ev"] for event in events]
+    assert kinds.count("error") == 1  # error 钩子的事件照常发出
+
+
+# ---- 复核缺口回归：HAR 合成延迟到代理确认终止 ----
+
+class _FlakyStopProcess:
+    """terminate 首次失败、之后成功的进程替身（模拟句柄占用/进程僵死）。"""
+
+    def __init__(self):
+        self.terminate_calls = 0
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminate_calls += 1
+        if self.terminate_calls == 1:
+            raise OSError("terminate failed")
+
+    def kill(self):
+        raise OSError("kill failed")
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_har_compose_deferred_until_proxy_confirmed_stopped(tmp_path):
+    """复核缺口回归：终止失败时不合成 HAR，确认终止后合成包含全部条目。
+
+    修复前实测：首次 stop 终止失败仍立即合成并置 _har_composed=True，进程
+    继续写入的条目被永久漏掉（JSONL 2 条 → 最终 HAR 仅 1 条，数据丢失）。
+    """
+    profiler = _profiler(FakeDevice())
+    profiler.start(netprof.build_profile("none"), work_dir=tmp_path)
+    profiler._process = _FlakyStopProcess()  # 换成首次终止失败的进程替身
+    _write_entries(tmp_path, count=1)  # 进程存活期间写入 1 条
+
+    first = profiler.stop()
+
+    assert first.har is not None
+    assert first.har.status == netprof.STATUS_NOT_TESTED  # 尚未合成，保持占位
+    assert not (tmp_path / "app.har").exists()  # 不产生截断快照
+    assert profiler._har_composed is False
+    assert profiler._process is not None  # 进程引用保留（可重试）
+
+    _write_entries(tmp_path, count=2)  # 进程"继续运行"又写入 1 条
+
+    second = profiler.stop()  # 第二次终止成功
+
+    assert profiler._har_composed is True
+    assert second.har.entries == 2
+    har = json.loads((tmp_path / "app.har").read_text(encoding="utf-8"))
+    assert len(har["log"]["entries"]) == 2  # 全量条目，无遗漏
+    assert profiler._process is None  # 终止确认后引用才释放

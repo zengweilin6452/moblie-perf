@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
-from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,9 @@ from . import battery as battery_module
 from . import collector
 from . import jank as jank_module
 from . import metrics as metrics_module
+
+# 报告转义规则统一出自 htmlsafe（P1-04）：文本/属性与 script 上下文各有专门规则
+from .htmlsafe import html_escape, json_for_script  # noqa: F401 - 对外兼容再导出
 
 SCHEMA_VERSION = 1
 
@@ -381,20 +384,57 @@ html { scroll-padding-top: 60px; }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.65;
-  font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-family: -apple-system,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans SC",
+    sans-serif;
+
   counter-reset: sec;
 }
 code { font-family: var(--mono); font-size: 12px; }
 .mono { font-family: var(--mono); font-size: 12px; }
 a { color: var(--accent-ink); }
-a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
-.toc { position: sticky; top: 0; z-index: 30; background: var(--surface); border-bottom: 1px solid var(--line); }
-.toc-inner { max-width: 1200px; margin: 0 auto; padding: 0 20px; display: flex; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.toc {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.toc-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
 .toc-inner::-webkit-scrollbar { height: 4px; }
 .toc-inner::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
-.toc-inner a { flex: none; padding: 12px 10px; font-size: 13px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
-.toc-inner a.toc-brand { font-weight: 650; color: var(--ink); font-family: var(--mono); font-size: 12px; }
+.toc-inner a {
+  flex: none;
+  padding: 12px 10px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+.toc-inner a.toc-brand {
+  font-weight: 650;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
 .toc-inner a.active { color: var(--accent-ink); border-bottom-color: var(--accent); }
 @media (hover: hover) { .toc-inner a:hover { color: var(--ink); } }
 
@@ -406,63 +446,209 @@ h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; margin: 4px 0 6
 .head-sub code { color: var(--muted); }
 .head-time { margin-left: 12px; color: var(--faint); }
 .chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
-.chip { display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border-radius: 999px; font-size: 12px; background: #eef1f5; color: var(--muted); }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #eef1f5;
+  color: var(--muted);
+}
 .chip.ok { background: var(--ok-bg); color: var(--ok); }
 .chip.warn { background: var(--warn-bg); color: var(--warn); }
 .chip.danger { background: var(--danger-bg); color: var(--danger); }
-.chip.ok::before, .chip.warn::before, .chip.danger::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.ok::before, .chip.warn::before, .chip.danger::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
 
-.kpis { margin-top: 18px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.kpi { display: block; background: var(--surface); padding: 14px 16px; text-decoration: none; color: inherit; }
+.kpis {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.kpi {
+  display: block;
+  background: var(--surface);
+  padding: 14px 16px;
+  text-decoration: none;
+  color: inherit;
+}
 .kpi .k-label { display: block; font-size: 12px; color: var(--muted); }
-.kpi .k-value { display: block; font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; margin-top: 2px; }
+.kpi .k-value {
+  display: block;
+  font-size: 26px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
 .kpi .k-unit { font-size: 13px; font-weight: 400; color: var(--faint); margin-left: 4px; }
-.kpi .k-sub { display: block; font-size: 11px; color: var(--faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .k-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
 @media (hover: hover) { .kpi:hover { background: #f7f9fc; } }
 
 .section { margin-top: 38px; }
-.section h2 { font-size: 16px; font-weight: 650; margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px; }
-.section h2::before { counter-increment: sec; content: counter(sec, decimal-leading-zero); font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--faint); }
-.section p { font-size: 12.5px; color: var(--muted); line-height: 1.7; max-width: 78ch; margin: 10px 0 0; }
+.section h2 {
+  font-size: 16px;
+  font-weight: 650;
+  margin: 0 0 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.section h2::before {
+  counter-increment: sec;
+  content: counter(sec, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+}
+.section p {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+  max-width: 78ch;
+  margin: 10px 0 0;
+}
 
-table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 4px; }
-th { font-size: 12px; color: var(--muted); font-weight: 600; text-align: left; padding: 8px 12px; background: #f7f9fb; border-bottom: 1px solid var(--line); }
-td { padding: 7px 12px; font-size: 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+th {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  background: #f7f9fb;
+  border-bottom: 1px solid var(--line);
+}
+td {
+  padding: 7px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
 tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 @media (hover: hover) { tbody tr:hover td { background: #f7f9fc; } }
-tr.group td { background: #f2f5f9; font-size: 12px; font-weight: 600; color: var(--muted); padding: 6px 12px; }
-.meta td:first-child { width: 190px; background: #f7f9fb; color: var(--muted); font-size: 12px; font-weight: 500; }
+tr.group td {
+  background: #f2f5f9;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 12px;
+}
+.meta td:first-child {
+  width: 190px;
+  background: #f7f9fb;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
 
-.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+.badge {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .badge.ok { color: var(--ok); background: var(--ok-bg); }
 .badge.warn { color: var(--warn); background: var(--warn-bg); }
 .badge.danger { color: var(--danger); background: var(--danger-bg); }
 .badge.muted { color: var(--muted); background: #eef1f5; }
-.grade-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+.grade-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
 .grade-dot.light { background: #b97e0f; }
 .grade-dot.heavy { background: #c2600f; }
 .grade-dot.severe { background: #b3261e; }
 .danger-text { color: var(--danger); font-weight: 600; }
 
-.stat-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
-.stat-value { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.stat-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 18px;
+}
+.stat-value {
+  font-size: 30px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
 .stat-unit { color: var(--faint); }
 .stat-label { color: var(--muted); font-size: 13px; margin-left: 6px; }
 
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 16px; margin-top: 4px; }
-.chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px 10px; margin: 0; }
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+  gap: 16px;
+  margin-top: 4px;
+}
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px 10px;
+  margin: 0;
+}
 .chart-card figcaption { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .c-label { font-size: 13px; font-weight: 600; }
 .c-en { font-size: 11px; color: var(--faint); }
-.c-unit { font-size: 11px; font-family: var(--mono); color: var(--accent-ink); background: var(--accent-bg); padding: 1px 7px; border-radius: 999px; }
+.c-unit {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--accent-ink);
+  background: var(--accent-bg);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
 .c-src { font-size: 11px; color: var(--faint); margin-left: auto; }
 .chart { width: 100%; height: 260px; margin-top: 6px; }
 .chart-wide { grid-column: 1 / -1; }
 .chart-wide .chart { height: 320px; }
 .chart-note { font-size: 11.5px; color: var(--warn); margin: 6px 0 2px; }
 
-details { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+details {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
 summary { cursor: pointer; font-size: 13px; color: var(--accent-ink); font-weight: 500; }
 details[open] summary { margin-bottom: 8px; }
 .event-list { margin-top: 12px; }
@@ -500,7 +686,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <style>{css}</style>
 </head>
 <body>
-<nav class="toc" aria-label="报告章节"><div class="toc-inner"><a class="toc-brand" href="#overview">mobile-perf</a>{nav_links}</div></nav>
+<nav class="toc" aria-label="报告章节"><div class="toc-inner">
+<a class="toc-brand" href="#overview">mobile-perf</a>{nav_links}
+</div></nav>
 <div class="wrap">
 <section id="overview" class="overview">
 {header_html}
@@ -508,7 +696,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </section>
 {body_sections}
 </div>
-<noscript><p class="noscript-note">曲线图需要 JavaScript（内嵌 ECharts）渲染；聚合统计见上表。</p></noscript>
+<noscript><p class="noscript-note">曲线图需要 JavaScript（内嵌 ECharts）渲染；
+聚合统计见上表。</p></noscript>
 <!-- vendor:echarts BEGIN -->
 <script>
 {echarts_js}
@@ -530,7 +719,8 @@ _MAIN_SCRIPT = """<script>
   var report = window.__REPORT__;
   var series = report.series || {};
   var startup = report.startup || null;
-  var PALETTE = ["#2f5fd0", "#0e8f6e", "#c93a32", "#b97e0f", "#7a4fd0", "#0e7f9e", "#c24a8a", "#6f7d1f"];
+  var PALETTE = ["#2f5fd0", "#0e8f6e", "#c93a32", "#b97e0f", "#7a4fd0",
+                 "#0e7f9e", "#c24a8a", "#6f7d1f"];
   var registry = window.__perfCharts = [];
   function axisCap(points) {
     if (!points || points.length < 20) return null;
@@ -650,7 +840,8 @@ def write_html(run_dir: str | Path, report: dict[str, Any]) -> Path:
     echarts_js = _ECHARTS_PATH.read_text(encoding="utf-8")
     # 避免 vendor 代码里可能的 </script> 提前闭合标签
     echarts_js = echarts_js.replace("</script", "<\\/script").replace("<!--", "<\\!--")
-    report_json = json.dumps(report, ensure_ascii=False).replace("</", "<\\/")
+    # 同源报告数据进入内联 script：统一走安全序列化（P0-01）
+    report_json = json_for_script(report)
 
     sections, combined_script = _body_sections(report, run_dir)
     section_ids = {sid for sid, _, _ in sections}
@@ -726,7 +917,9 @@ def _ordered_keys(keys: Any) -> list[str]:
     return ordered + remaining
 
 
-def _body_sections(report: dict[str, Any], run_dir: str | Path) -> tuple[list[tuple[str, str, str]], str]:
+def _body_sections(
+    report: dict[str, Any], run_dir: str | Path
+) -> tuple[list[tuple[str, str, str]], str]:
     """按固定顺序收集非空小节；返回 (小节列表, 同图脚本)。导航与正文同源。"""
     charts_html, combined_script = _charts_grid_html(report)
     candidates = [
@@ -807,7 +1000,10 @@ def _kpi_html(report: dict[str, Any], section_ids: set[str]) -> str:
             sub_bits.append(f"Displayed {_fmt(startup['displayedMs'])}")
         if startup.get("deviationMs") is not None:
             sub_bits.append(f"偏差 {_fmt(startup['deviationMs'])}")
-        items.append((label, _fmt(startup["ms"]), "ms", " / ".join(sub_bits) + " ms" if sub_bits else "", "#startup"))
+        items.append(
+            (label, _fmt(startup["ms"]), "ms",
+             " / ".join(sub_bits) + " ms" if sub_bits else "", "#startup")
+        )
 
     def add(key: str, label: str, stat: str = "median", sub: str = "", section: str = "summary"):
         entry = summary.get(key) or {}
@@ -816,7 +1012,9 @@ def _kpi_html(report: dict[str, Any], section_ids: set[str]) -> str:
             return
         if not sub and entry.get("p90") is not None:
             sub = f"P90 {_fmt(entry['p90'])}"
-        items.append((label, _fmt(value), str(entry.get("unit") or ""), sub, href_for(key, section)))
+        items.append(
+            (label, _fmt(value), str(entry.get("unit") or ""), sub, href_for(key, section))
+        )
 
     add("fps_frame", "帧率（中位）")
     frozen = (summary.get("app_frame_frozen_ratio_pct") or {}).get("median")
@@ -833,7 +1031,8 @@ def _kpi_html(report: dict[str, Any], section_ids: set[str]) -> str:
     )
     add("cpu_process_pct", "应用 CPU（中位）")
     mem_max = (summary.get("mem_pss_mb") or {}).get("max")
-    add("mem_pss_mb", "PSS 内存（中位）", sub=f"峰值 {_fmt(mem_max)}" if mem_max is not None else "")
+    mem_sub = f"峰值 {_fmt(mem_max)}" if mem_max is not None else ""
+    add("mem_pss_mb", "PSS 内存（中位）", sub=mem_sub)
     power = (summary.get("battery_power_avg_mw") or {}).get("median")
     add(
         "battery_current_avg_ma", "平均电流",
@@ -847,8 +1046,10 @@ def _kpi_html(report: dict[str, Any], section_ids: set[str]) -> str:
     if not items:
         return ""
     cells = "".join(
-        f'<a class="kpi" href="{html_escape(href)}"><span class="k-label">{html_escape(label)}</span>'
-        f'<span class="k-value">{html_escape(value)}<span class="k-unit">{html_escape(unit)}</span></span>'
+        f'<a class="kpi" href="{html_escape(href)}">'
+        f'<span class="k-label">{html_escape(label)}</span>'
+        f'<span class="k-value">{html_escape(value)}'
+        f'<span class="k-unit">{html_escape(unit)}</span></span>'
         f'<span class="k-sub">{html_escape(sub)}</span></a>'
         for label, value, unit, sub, href in items
     )
@@ -871,8 +1072,9 @@ def _summary_html(report: dict[str, Any]) -> str:
             last_group = group
         rows.append(
             '<tr><td>{label}</td><td>{unit}</td><td class="mono">{source}</td>'
-            '<td class="num">{min}</td><td class="num">{median}</td><td class="num">{mean}</td>'
-            '<td class="num">{max}</td><td class="num">{p90}</td><td class="num">{count}</td></tr>'.format(
+            '<td class="num">{min}</td><td class="num">{median}</td>'
+            '<td class="num">{mean}</td><td class="num">{max}</td>'
+            '<td class="num">{p90}</td><td class="num">{count}</td></tr>'.format(
                 label=html_escape(
                     _bilingual(entry.get("labelZh"), entry.get("labelEn"), key)
                 ),
@@ -883,7 +1085,7 @@ def _summary_html(report: dict[str, Any]) -> str:
                 mean=_fmt(entry.get("mean")),
                 max=_fmt(entry.get("max")),
                 p90=_fmt(entry.get("p90")),
-                count=entry.get("sampleCount", ""),
+                count=_fmt(entry.get("sampleCount", "")),
             )
         )
     return (
@@ -990,7 +1192,8 @@ _COMBINED_SCRIPT = """<script>
   var fps = series["fps_frame"];
   var supplement = [["temp_battery_c", series["temp_battery_c"]],
                     ["gpu_util_pct", series["gpu_util_pct"]],
-                    ["gpu_mem_mb", series["gpu_mem_mb"]]].filter(function (pair) { return pair[1]; });
+                    ["gpu_mem_mb", series["gpu_mem_mb"]]]
+    .filter(function (pair) { return pair[1]; });
   if (!viz || !fps || supplement.length === 0 || typeof echarts === "undefined") return;
   var el = document.getElementById("__CHART_ID__");
   if (!el) return;
@@ -1098,7 +1301,7 @@ def _page_markup(report: dict[str, Any]) -> str:
                 page=html_escape(str(item.get("page") or "")),
                 value=_fmt(value) if value is not None else "not_tested",
                 status=status_cell,
-                frames=item.get("frameCount", ""),
+                frames=_fmt(item.get("frameCount", "")),
                 reason=html_escape(str(item.get("reason") or "")),
             )
         )
@@ -1171,7 +1374,7 @@ def _page_markline_script(report: dict[str, Any]) -> str:
       host.markLine = mark;
     }
   })();
-  """.replace("__PAGE_POINTS__", json.dumps(points, ensure_ascii=False))
+  """.replace("__PAGE_POINTS__", json_for_script(points))
 
 
 def _gpu_markup(report: dict[str, Any]) -> str:
@@ -1189,7 +1392,7 @@ def _gpu_markup(report: dict[str, Any]) -> str:
             median=_fmt(entry.get("median")),
             p90=_fmt(entry.get("p90")),
             max=_fmt(entry.get("max")),
-            count=entry.get("sampleCount", ""),
+            count=_fmt(entry.get("sampleCount", "")),
             unit=html_escape(str(entry.get("unit") or "")),
         )
         for key in ("gpu_util_pct", "gpu_mem_mb")
@@ -1331,7 +1534,7 @@ def _jank_markup(report: dict[str, Any]) -> str:
                 grade=grade,
                 label=html_escape(label),
                 count=_fmt(entry.get("max")),
-                samples=entry.get("sampleCount", ""),
+                samples=_fmt(entry.get("sampleCount", "")),
             )
         )
     return (
@@ -1405,9 +1608,14 @@ def _api_markup(report: dict[str, Any]) -> str:
         return ""
     rows = []
     for item in top:
+        # 统计字段来自日志解析（宿主可影响报告数据），渲染一律经 _fmt 转义，
+        # 不直接信任其类型（P1-04 复核：errors/count 曾原样进入 HTML）
         errors = item.get("errors", 0)
+        errors_text = _fmt(errors)
         errors_cell = (
-            f'<span class="danger-text">{errors}</span>' if errors else str(errors)
+            f'<span class="danger-text">{errors_text}</span>'
+            if errors
+            else errors_text
         )
         rows.append(
             '<tr><td>{host}</td><td>{route}</td><td class="num">{count}</td>'
@@ -1416,7 +1624,7 @@ def _api_markup(report: dict[str, Any]) -> str:
             '<td class="num">{payload}</td></tr>'.format(
                 host=html_escape(str(item.get("host") or "")),
                 route=html_escape(str(item.get("route") or "")),
-                count=item.get("count", ""),
+                count=_fmt(item.get("count", "")),
                 median=_fmt(item.get("medianMs")),
                 p90=_fmt(item.get("p90Ms")),
                 max=_fmt(item.get("maxMs")),
@@ -1426,8 +1634,12 @@ def _api_markup(report: dict[str, Any]) -> str:
         )
     by_host = api.get("byHost") or {}
     host_text = "；".join(
-        f"{html_escape(str(host))}：{count} 次"
-        for host, count in sorted(by_host.items(), key=lambda pair: -pair[1])
+        f"{html_escape(str(host))}：{_fmt(count)} 次"
+        # 排序键也做类型防线：非数值计数按 0 处理，不让恶意数据打断渲染
+        for host, count in sorted(
+            by_host.items(),
+            key=lambda pair: -(pair[1] if _is_number(pair[1]) else 0),
+        )
     )
     return (
         "<h2>接口瀑布图 / API waterfall</h2>"
@@ -1437,7 +1649,8 @@ def _api_markup(report: dict[str, Any]) -> str:
         '<th class="num">错误 / Errors</th><th class="num">响应 / Payload (KB)</th></tr>'
         f"{''.join(rows)}</table>"
         f"<p>按域名分组 / By host：{host_text}。"
-        f"共 {api.get('totalRoutes', len(top))} 个接口路由，错误 {api.get('errors', 0)} 次。"
+        f"共 {_fmt(api.get('totalRoutes', len(top)))} 个接口路由，"
+        f"错误 {_fmt(api.get('errors', 0))} 次。"
         "排序依据 P90（尾部耗时），不是中位。</p>"
         "<p>⚠️ 与上方「网络剖面」的连接级指标口径不同：这里按 <strong>URL 路由</strong>"
         "统计（同一隧道的多个请求各算一次），连接级指标按 <strong>TLS 隧道</strong>统计，"
@@ -1485,6 +1698,14 @@ def _network_markup(report: dict[str, Any]) -> str:
             (
                 "环境恢复 / Restored",
                 "，".join(f"{key}={value}" for key, value in restored.items()),
+            )
+        )
+    if network.get("restoreErrors"):
+        rows.append(
+            (
+                "恢复失败 / Restore errors",
+                "；".join(network["restoreErrors"])
+                + "（残留项由下一次 netprof doctor 复检清理）",
             )
         )
     trust_kind = {"trusted": "ok", "rejected": "danger"}.get(
@@ -1600,25 +1821,44 @@ def _trust_text(trust: Any) -> str:
 
 
 def _jank_threshold_line_script(report: dict[str, Any]) -> str:
-    """最长延迟曲线上的三档阈值线（仅当该曲线存在时注入）。"""
+    """最长延迟曲线上的三档阈值线（仅当该曲线存在时注入）。
+
+    阈值归宿主配置（jank.thresholdsMs），不能假设可信：只把有限数值画进
+    JS 阈值线，非数值/NaN 配置不进入内联脚本（卡顿表格仍会如实显示该值）。
+    """
     if "frame_delay_max_ms" not in (report.get("series") or {}):
         return ""
     thresholds = _jank_thresholds(report)
-    lines = ", ".join(
-        f'{{ yAxis: {_fmt(thresholds[grade])}, lineStyle: {{ type: "dashed" }}, '
-        f'label: {{ formatter: "{_fmt(thresholds[grade])} ms", fontSize: 10, '
-        f'position: "insideStartTop" }} }}'
-        for grade in jank_module.GRADES
-    )
+    lines = []
+    for grade in jank_module.GRADES:
+        value = thresholds.get(grade)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+        ):
+            continue
+        lines.append(
+            f'{{ yAxis: {json_for_script(value)}, lineStyle: {{ type: "dashed" }}, '
+            f'label: {{ formatter: {json_for_script(_fmt(value) + " ms")}, fontSize: 10, '
+            f'position: "insideStartTop" }} }}'
+        )
+    if not lines:
+        return ""
     return (
         'if (key === "frame_delay_max_ms" && typeof option !== "undefined") {\n'
-        '    option.series[0].markLine = { symbol: "none", data: [' + lines + "] };\n"
+        '    option.series[0].markLine = { symbol: "none", data: [' + ", ".join(lines) + "] };\n"
         "  }\n  "
     )
 
 
 def _artifact_links_html(report: dict[str, Any], run_dir: str | Path) -> str:
-    """产物清单单元格：折叠收纳，一行一个相对 report.html 所在目录的链接。"""
+    """产物清单单元格：折叠收纳，一行一个相对 report.html 所在目录的链接。
+
+    URL 上下文防线（P1-04）：``artifacts`` 是宿主可影响的报告数据，``href``
+    只对真实存在的本地文件发出——``javascript:``/``data:`` 之类伪路径按纯
+    文本如实呈现；``html_escape`` 只保证不突破属性引号，挡不住可点击入口。
+    """
     artifacts = report.get("artifacts") or []
     if not artifacts:
         return "无"
@@ -1629,11 +1869,26 @@ def _artifact_links_html(report: dict[str, Any], run_dir: str | Path) -> str:
             rel = Path(os.path.relpath(art, run_dir)).as_posix()
         except ValueError:
             rel = Path(art).as_posix()
-        links.append(f'<a href="{html_escape(rel)}">{html_escape(rel)}</a>')
+        text = html_escape(rel)
+        if _is_local_file(rel, run_dir) or _is_local_file(art, run_dir):
+            links.append(f'<a href="{text}">{text}</a>')
+        else:
+            links.append(text)
     return (
         f'<details class="artifact-list"><summary>{len(links)} 个产物文件</summary>'
         f'<div class="artifact-links">{"<br>".join(links)}</div></details>'
     )
+
+
+def _is_local_file(value: str, run_dir: str | Path) -> bool:
+    """值是否为真实存在的本地路径（含目录；异常一律按否处理，URL 上下文从严）。"""
+    for candidate in (Path(run_dir) / value, Path(value)):
+        try:
+            if candidate.exists():
+                return True
+        except OSError:  # noqa: PERF203 - Windows 对含冒号等非法路径会抛 OSError
+            continue
+    return False
 
 
 def _report_outputs_html(run_dir: str | Path) -> str:
@@ -1690,9 +1945,22 @@ def _bilingual(label_zh: str | None, label_en: str | None, fallback: str) -> str
     return label_zh or label_en or fallback
 
 
+def _is_number(value: Any) -> bool:
+    """bool 不是数值口径（True/False 参与排序会当成 1/0），显式排除。"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _fmt(value: Any) -> str:
+    """渲染层统一格式化（P1-04 复核）：数值原样，其余一律 HTML 转义。
+
+    报告数据可能来自宿主配置与外部输入（页面名、接口统计字段等），渲染层
+    不信任其类型：数值直接格式化，非数值（含注入串）经 html.escape 后呈现，
+    不再以 str() 原样进入 HTML。
+    """
     if value is None:
         return ""
-    if isinstance(value, float):
+    if isinstance(value, float) and not isinstance(value, bool):
         return f"{value:.4g}"
-    return str(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return html_escape(str(value))

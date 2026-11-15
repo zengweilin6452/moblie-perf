@@ -84,6 +84,31 @@ DEFAULT_MAX_ENTRIES = 5000
 DEFAULT_MAX_BYTES = 67108864  # 64 MiB
 DEFAULT_MAX_HASH_BYTES = 8 * 1024 * 1024  # 8 MiB
 
+# writer 旁路状态文件后缀（与 entries 同目录）：addon 进程被硬 terminate 后，
+# 节流日志恢复不了节流窗口内（1~99 条）的精确计数，这份 O(1) 大小的状态文件
+# 由常驻句柄在每次丢弃/写失败时就地重写并 flush，保存最终精确值；
+# compose 侧优先读它（P0-03/P0-04）
+STATE_SUFFIX = ".state.json"
+
+
+def state_path_for(entries_path: str | os.PathLike[str]) -> Path:
+    """entries JSONL 对应的 writer 状态文件路径（单一推导规则，双方共用）。"""
+    return Path(str(entries_path) + STATE_SUFFIX)
+
+
+def read_writer_state(entries_path: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """读取 writer 状态文件的精确计数；缺失/损坏返回 None（调用方退回日志推算）。"""
+    try:
+        raw = state_path_for(entries_path).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return {
+            "droppedEntries": int(data["droppedEntries"]),
+            "writerErrors": int(data["writerErrors"]),
+            "truncatedReason": data.get("truncatedReason"),
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
 # HAR 摘要状态（固定五态）
 STATUS_NOT_ENABLED = "not_enabled"
 STATUS_NOT_TESTED = "not_tested"
@@ -140,8 +165,13 @@ class HarSummary:
     truncated: bool = False
     truncated_reason: str | None = None
     dropped_entries: int = 0
-    skipped_entries: int = 0
+    # 日志事件数（节流观测）：har_dropped 只在首次与每累计 100 条时落事件，
+    # 与 droppedEntries（真实条目数）不是同一个口径（P0-03）
+    dropped_events: int = 0
     writer_errors: int = 0
+    # 计数来源：writer_state=旁路状态文件的精确值；proxy_log=节流日志推算（下界）
+    counters_source: str = "proxy_log"
+    skipped_entries: int = 0
     https_coverage: str = "unknown"
     not_tested_reason: str | None = None
 
@@ -158,6 +188,8 @@ class HarSummary:
             "truncated": self.truncated,
             "truncatedReason": self.truncated_reason,
             "droppedEntries": self.dropped_entries,
+            "droppedEvents": self.dropped_events,
+            "countersSource": self.counters_source,
             "skippedEntries": self.skipped_entries,
             "writerErrors": self.writer_errors,
             "httpsCoverage": self.https_coverage,
@@ -229,16 +261,30 @@ def scrub_headers(
     return cleaned
 
 
-def _query_segments(url: str) -> list[tuple[str, str, str]]:
-    """(原始名段, 分隔符, 原始值段) 列表；保留顺序与重复项。"""
-    query = urlsplit(url).query
+def _kv_segments(text: str) -> list[tuple[str, str, str]]:
+    """(原始名段, 分隔符, 原始值段) 列表；保留顺序与重复项（查询串/fragment 通用）。"""
     segments: list[tuple[str, str, str]] = []
-    for chunk in query.split("&"):
+    for chunk in text.split("&"):
         if not chunk:
             continue
         name, sep, value = chunk.partition("=")
         segments.append((name, sep, value))
     return segments
+
+
+def _redact_kv(text: str) -> str:
+    """按查询参数口径脱敏 key=value&... 串；非敏感项与无值段原样保留。"""
+    return "&".join(
+        f"{name}={REDACTED}"
+        if sep and unquote_plus(name).lower() in SENSITIVE_QUERY_KEYS
+        else f"{name}{sep}{value}"
+        for name, sep, value in _kv_segments(text)
+    )
+
+
+def _query_segments(url: str) -> list[tuple[str, str, str]]:
+    """(原始名段, 分隔符, 原始值段) 列表；保留顺序与重复项。"""
+    return _kv_segments(urlsplit(url).query)
 
 
 def _query_string(url: str, *, redact: bool = True) -> list[dict[str, str]]:
@@ -253,7 +299,12 @@ def _query_string(url: str, *, redact: bool = True) -> list[dict[str, str]]:
 
 
 def scrub_url(url: str, *, redact: bool = True) -> str:
-    """URL 脱敏：userinfo 与敏感查询参数替换，其余部分保持原样。"""
+    """URL 脱敏：userinfo、敏感查询参数与敏感 fragment 参数替换，其余原样。
+
+    fragment 也要按查询口径脱敏（P1-02）：OAuth 隐式流程的重定向把
+    ``access_token`` 等放在 ``#access_token=...`` 里，只查 query 会原样落盘。
+    非 key=value 形态的 fragment（如锚点 ``#section-2``）不改动。
+    """
     if not redact or not url:
         return url
     parts = urlsplit(url)
@@ -263,13 +314,11 @@ def scrub_url(url: str, *, redact: bool = True) -> str:
         # userinfo 里用裸 REDACTED 而非 ``[REDACTED]``：方括号会让 urlsplit
         # 把 host 当 IPv6 字面量而抛错，产物应是可再次解析的合法 URL
         netloc = "REDACTED:REDACTED@" + host
-    rebuilt_query = "&".join(
-        f"{name}={REDACTED}"
-        if sep and unquote_plus(name).lower() in SENSITIVE_QUERY_KEYS
-        else f"{name}{sep}{value}"
-        for name, sep, value in _query_segments(url)
+    rebuilt_query = _redact_kv(parts.query)
+    rebuilt_fragment = _redact_kv(parts.fragment)
+    return urlunsplit(
+        (parts.scheme, netloc, parts.path, rebuilt_query, rebuilt_fragment)
     )
-    return urlunsplit((parts.scheme, netloc, parts.path, rebuilt_query, parts.fragment))
 
 
 # ---------- 条目构造 ----------
@@ -500,6 +549,7 @@ class HarWriter:
         max_bytes: int = DEFAULT_MAX_BYTES,
         on_drop: Any = None,
         on_error: Any = None,
+        state_path: str | os.PathLike[str] | None = None,
     ):
         for name, value in (("max_entries", max_entries), ("max_bytes", max_bytes)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -509,6 +559,12 @@ class HarWriter:
         self.max_bytes = max_bytes
         self._on_drop = on_drop
         self._on_error = on_error
+        # None = 默认按 entries 路径派生；显式传空串关闭（纯内存/临时用法）
+        self._state_path: Path | None = (
+            state_path_for(self.path)
+            if state_path is None
+            else (Path(state_path) if state_path else None)
+        )
         self.entries = 0
         self.dropped_entries = 0
         self.writer_errors = 0
@@ -517,6 +573,38 @@ class HarWriter:
         self._closed = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = self.path.open("a", encoding="utf-8")
+        # 旁路状态文件用常驻句柄（P1-04 复核性能缺口）：首次丢弃/失败时懒打开
+        self._state_handle = None
+
+    def _persist_state(self) -> None:
+        """把精确计数写入常驻句柄的旁路状态文件；失败静默（节流日志是兜底证据）。
+
+        每次丢弃/写失败都 seek+write+truncate+flush 同一句柄：flush 后的内容
+        已在 OS 缓存，进程被硬杀不丢——计数精度边界只剩整机断电/OS 崩溃可能
+        丢最后一次 flush 前的增量，此时 compose 退回节流日志推算并把
+        countersSource 如实标为 proxy_log（下界）。
+        修复前每条丢弃走"临时文件 + os.replace"（Windows 实测 ~1.16 ms/条、
+        5000 条丢弃额外 ~5.8 s），限额触顶后高流量会放大该开销。
+        """
+        if self._state_path is None:
+            return
+        payload = json.dumps(
+            {
+                "droppedEntries": self.dropped_entries,
+                "writerErrors": self.writer_errors,
+                "truncatedReason": self.truncated_reason,
+            },
+            ensure_ascii=False,
+        )
+        try:
+            if self._state_handle is None:
+                self._state_handle = self._state_path.open("w", encoding="utf-8")
+            self._state_handle.seek(0)
+            self._state_handle.write(payload)
+            self._state_handle.truncate()
+            self._state_handle.flush()
+        except (OSError, ValueError):
+            self._state_handle = None  # 句柄失效即弃用，避免每条都撞同一错误
 
     def write(self, entry: dict[str, Any]) -> bool:
         """写一条 entry；被限额丢弃或写失败返回 False，绝不向上抛。"""
@@ -529,6 +617,7 @@ class HarWriter:
             self.writer_errors += 1
             if self._on_error is not None:
                 self._on_error(str(exc))
+            self._persist_state()
             return False
         if self.entries + self.dropped_entries >= self.max_entries:
             return self._drop("max_entries")
@@ -542,6 +631,7 @@ class HarWriter:
             self.writer_errors += 1
             if self._on_error is not None:
                 self._on_error(str(exc))
+            self._persist_state()
             return False
         self.entries += 1
         self.bytes_written += len(encoded)
@@ -553,6 +643,7 @@ class HarWriter:
             self.truncated_reason = reason
         if self._on_drop is not None:
             self._on_drop(reason)
+        self._persist_state()
         return False
 
     def close(self) -> None:
@@ -563,6 +654,12 @@ class HarWriter:
             self._handle.close()
         except OSError:
             pass
+        if self._state_handle is not None:
+            try:
+                self._state_handle.close()
+            except OSError:
+                pass
+            self._state_handle = None
 
     def __enter__(self) -> HarWriter:
         return self
@@ -599,7 +696,9 @@ def compose_har(
         body_mode=str(meta.get("bodyMode") or "metadata"),
         redacted=bool(meta.get("redacted", True)),
         dropped_entries=int(meta.get("droppedEntries") or 0),
+        dropped_events=int(meta.get("droppedEvents") or 0),
         writer_errors=int(meta.get("writerErrors") or 0),
+        counters_source=str(meta.get("countersSource") or "proxy_log"),
         truncated=bool(meta.get("truncated", False)),
         truncated_reason=meta.get("truncatedReason"),
         https_coverage=str(meta.get("httpsCoverage") or "unknown"),

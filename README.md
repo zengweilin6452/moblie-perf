@@ -117,6 +117,7 @@ ruff check src tests
 - GPU 利用率补采依赖机型（kgsl 需 root），不支持时如实降级 `not_tested`，不伪造数据；
 - 充电状态下 Battery/温度项自动标注 `not_tested`（其余照采）；
 - **HAR 覆盖边界**：HTTPS 需被测 App 信任代理 CA；QUIC/UDP、非 HTTP TCP、证书 pinning 与未关闭的 WebSocket 长连接不保证覆盖。mitmproxy 缺失、端口占用或零 HTTP 请求时如实 `not_tested` 并给原因，不创建空 `app.har`；证书拒绝时只有真实明文 HTTP 会进 `partial` HAR（`httpsCoverage="none"`）；
+- **HAR 限额计数口径**：触发条目/字节上限后 `droppedEntries`/`writerErrors` 优先取 writer 状态文件（`network/app.har.entries.jsonl.state.json`）的精确值（`countersSource="writer_state"`）；代理日志的 `har_dropped`/`har_error` 事件按"首次 + 每累计 100 条"节流，无状态文件时仅能从日志推算出下界（`countersSource="proxy_log"`）；`droppedEvents` 是节流事件条数，不是丢弃条目数；
 - `--capture-har-no-redact` 仅用于本地排查，报告会显著标注危险；报告 JSON/HTML 永不内嵌 HAR 正文或敏感原值；
 - SoloPi 内部 adb 走手机 tcpip 5555，与 PC adb 相互独立；keeper 可自动恢复；
 - App 执行 `am force-stop` 会清除无障碍授权（重启不清），需重新授权。

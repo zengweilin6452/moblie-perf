@@ -1,6 +1,7 @@
 """report 骨架的单元测试：报告聚合与落盘（M3 补齐图表数据）。"""
 
 import json
+from html import escape as html_escape
 
 import pytest
 
@@ -904,3 +905,173 @@ def test_page_markline_absent_when_no_page_is_stable(tmp_path):
     html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
 
     assert "markLine" not in _strip_vendor(html)
+
+
+# ---- P0-01：内联 JavaScript 注入防护（页面名来自宿主 mark_page，不可假设可信） ----
+
+_SCRIPT_PAYLOAD = "</script><script>alert(1)</script>"
+
+
+def _pages_meta_with_page(name, **extra):
+    item = {"page": name, "status": "ok", "t0S": 1.0, "pageLoadMs": 1200.0,
+            "stableAtS": 2.2, "frameCount": 3, "lastFrameS": 2.2, "reason": None}
+    item.update(extra)
+    return _pages_meta(pages=[item])
+
+
+def test_page_markline_neutralizes_script_injection(tmp_path):
+    """恶意页面名不得在 script 上下文出现原始闭合序列，嵌入数据须可原样还原。"""
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta_with_page(_SCRIPT_PAYLOAD),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    # 原始 payload 不得原样出现在 HTML 任何位置（script 数据块与 HTML 文本均不得）
+    assert _SCRIPT_PAYLOAD not in html
+    # 内联 points 数据解析后与原始输入完全一致
+    script = _strip_vendor(html)
+    start = script.index("var points = ") + len("var points = ")
+    points, _ = json.JSONDecoder().raw_decode(script[start:])
+    assert points[0]["page"] == _SCRIPT_PAYLOAD
+
+
+def test_report_data_block_neutralizes_script_injection(tmp_path):
+    """同源报告数据块 window.__REPORT__ 对同一 payload 也不逃逸，且解析回原值。"""
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta_with_page(_SCRIPT_PAYLOAD),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    marker = "window.__REPORT__ = "
+    start = html.index(marker) + len(marker)
+    data, _ = json.JSONDecoder().raw_decode(html[start:])
+    assert data["pages"]["pages"][0]["page"] == _SCRIPT_PAYLOAD
+
+
+def test_page_markline_keeps_normal_names_round_trip(tmp_path):
+    """普通中文/空格/引号/反斜杠/emoji 页面名：数据原样还原且表格可见。"""
+    names = ["首页 Home", r'引号"页\反斜杠', "首页 🚀"]
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        pages=_pages_meta(pages=[
+            {**_pages_meta()["pages"][0], "page": name, "stableAtS": 2.0 + i}
+            for i, name in enumerate(names)
+        ]),
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    script = _strip_vendor(html)
+    start = script.index("var points = ") + len("var points = ")
+    points, _ = json.JSONDecoder().raw_decode(script[start:])
+    assert [item["page"] for item in points] == names
+    # 整页加载表格（HTML 文本上下文）仍按转义后的名字呈现
+    for name in names:
+        assert html_escape(name) in html
+
+
+def test_jank_threshold_line_renders_numeric_config(tmp_path):
+    """宿主配置数值阈值照常画出阈值线（light<heavy<severe 校验后）。"""
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        jank_thresholds_ms={"light": 34.0, "heavy": 300.0, "severe": 700.0},
+        metrics_summary={"app_jank_light_count": {"median": 1.0, "sampleCount": 2}},
+        series={
+            "frame_delay_max_ms": {
+                "unit": "ms", "labelZh": "最长帧延迟", "points": [[0.0, 50.0]]
+            }
+        },
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    assert "yAxis: 34.0" in html
+
+
+def test_jank_threshold_line_skips_non_numeric_values():
+    """渲染层兜底：绕过 build_report 校验构造的 report 字典，非数值/NaN 阈值不进 JS。"""
+    script = report._jank_threshold_line_script({
+        "series": {"frame_delay_max_ms": {"unit": "ms", "points": [[0.0, 50.0]]}},
+        "jank": {"thresholdsMs": {
+            "light": '0", alert(1), "', "heavy": float("nan"), "severe": 700.0,
+        }},
+    })
+
+    assert "alert(1)" not in script
+    assert "700.0" in script
+
+
+def test_build_report_rejects_non_numeric_thresholds():
+    """build_report 入口即拒绝非数值阈值（validate_thresholds 既有契约）。"""
+    with pytest.raises(ValueError):
+        report.build_report(
+            meta=_meta(), record=_record(), artifacts=[],
+            jank_thresholds_ms={
+                "light": 34.0, "heavy": '0", alert(1), "', "severe": 700.0,
+            },
+            metrics_summary={"app_jank_light_count": {"median": 1.0}},
+        )
+
+
+def test_network_markup_shows_restore_errors_and_doctor_hint(tmp_path):
+    """恢复失败在报告网络小节明示，并指向 doctor 兜底（P1-07）。"""
+    built = report.build_report(
+        meta=_meta(), record=_record(), artifacts=[],
+        network={
+            "tier": "passthrough",
+            "profile": {"name": "3g"},
+            "effective": True,
+            "restored": {"deviceProxy": True, "reverse": False},
+            "restoreErrors": ["恢复 reverse 失败: adb 连接中断"],
+        },
+    )
+
+    markup = report._network_markup(built)
+
+    assert "恢复失败 / Restore errors" in markup
+    assert "恢复 reverse 失败" in markup
+    assert "netprof doctor" in markup
+
+
+# ---- P1-04 复核：报告级 XSS 负向（api 统计字段等宿主可影响字段） ----
+
+_XSS_PAYLOAD = "</td><script>alert(1)</script>"
+
+
+def test_write_html_neutralizes_xss_in_api_and_host_fields(tmp_path):
+    """复核注入复现：API 统计字段与宿主字段注入 </td><script> 不得进入 HTML。
+
+    修复前 _api_markup 的 count/errors/byHost 计数与 _summary/_gpu/_jank 的
+    sampleCount 原样插值，payload 直接出现在 HTML（复核实测）。
+    """
+    built = report.build_report(
+        meta={**_meta(), "target": _XSS_PAYLOAD},
+        record={**_record(), "marks": [{"label": _XSS_PAYLOAD}]},
+        artifacts=[],
+        metrics_summary={"mem_pss_mb": {"median": 42.0, "sampleCount": _XSS_PAYLOAD}},
+        api={
+            "top": [{
+                "host": _XSS_PAYLOAD, "route": _XSS_PAYLOAD, "count": _XSS_PAYLOAD,
+                "medianMs": 1.0, "p90Ms": 2.0, "maxMs": 3.0,
+                "errors": _XSS_PAYLOAD, "payloadKb": 4.0,
+            }],
+            "byHost": {_XSS_PAYLOAD: _XSS_PAYLOAD},
+            "totalRoutes": _XSS_PAYLOAD,
+            "errors": _XSS_PAYLOAD,
+        },
+    )
+
+    html = report.write_html(tmp_path, built).read_text(encoding="utf-8")
+
+    # 原始 payload 不得出现在 HTML 任何位置（表格与同源 JSON 块都不行）
+    assert _XSS_PAYLOAD not in html
+    # 数据保真：嵌入 JSON 解析后与原值逐字符一致（转义不破坏数据）
+    embedded = json.loads(_extract_embedded_json(html))
+    assert embedded["api"]["top"][0]["count"] == _XSS_PAYLOAD
+    assert embedded["metricsSummary"]["mem_pss_mb"]["sampleCount"] == _XSS_PAYLOAD
+    # 文本上下文如实呈现转义后的值（可见但不可执行）
+    assert "&lt;/td&gt;&lt;script&gt;" in html
