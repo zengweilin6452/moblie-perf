@@ -139,19 +139,32 @@ def _init_har() -> None:
         dropped = {"count": 0}
 
         def on_drop(reason: str) -> None:
-            # 达到上限后可能持续丢包。只记首个原因，并每 100 条附带一次累计数：
-            # 既不让重流量灌爆唯一生效证据日志，也让 compose 侧能还原量级。
+            # 节流：首个丢弃 + 每累计 100 条记一次累计数——既不让重流量灌爆唯一
+            # 生效证据日志，事件里的累计数也够 compose 侧推算量级；节流窗口内
+            # （如丢弃 23 条只落 1 条事件）的精确值由 HarWriter 旁路状态文件
+            # 承载（P0-03），代理日志不逐条写。
             dropped["count"] += 1
             count = dropped["count"]
             if count == 1 or count % 100 == 0:
                 _emit("har_dropped", reason=reason, dropped=count, truncated=True)
+
+        errors = {"count": 0}
+
+        def on_error(message: str) -> None:
+            # 写失败同口径节流（P0-04）：磁盘满/句柄失效会持续失败，逐条记事件
+            # 会把代理日志淹成错误流、放大故障；精确失败次数在状态文件里，
+            # 代理转发不受任何影响。
+            errors["count"] += 1
+            count = errors["count"]
+            if count == 1 or count % 100 == 0:
+                _emit("har_error", error=message, errors=count)
 
         writer = module.HarWriter(
             entries,
             max_entries=options.max_entries,
             max_bytes=options.max_bytes,
             on_drop=on_drop,
-            on_error=lambda message: _emit("har_error", error=message),
+            on_error=on_error,
         )
     except Exception as exc:  # noqa: BLE001 - 抓包失败不能阻断弱网与采集
         _emit("har_error", error=f"init: {exc}")

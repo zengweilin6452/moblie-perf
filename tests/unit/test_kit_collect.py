@@ -471,3 +471,130 @@ def test_collect_frame_poll_reset_failure_is_recorded(tmp_path):
 
     assert report["frames"]["resetOk"] is False
     assert report["metricsSummary"]["app_frame_count"]["median"] == 2.0
+
+
+# ---- P1-07：启动期组件失败只降级，不悬挂 SoloPi 会话 ----
+
+def test_supplement_start_failure_degrades_to_event_and_stops_session(
+    tmp_path, monkeypatch
+):
+    """补采器构造/启动抛异常：collect 照常完成、SoloPi 正常停止、事件如实入库。"""
+    backend = FakeHarnessBackend()
+    kit = _counting_kit(tmp_path, backend)
+
+    def boom(*_args, **_kwargs):
+        raise ConnectionError("adb 断连")
+
+    monkeypatch.setattr(kit, "_start_supplement", boom)
+
+    with kit.collect(
+        target="tv.danmaku.bili", items=["CPU"], supplement=True,
+        host_run_id="run-supp-fail",
+    ) as scope:  # __enter__ 不得向上抛
+        pass
+
+    report = scope.finalize()
+
+    assert len(backend.stopped) == 1  # SoloPi 会话正常停止，未悬挂
+    warnings = [e for e in report["events"] if e["kind"] == "setup_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["detail"]["component"] == "supplement"
+    assert "adb 断连" in warnings[0]["detail"]["reason"]
+
+
+def test_frame_poll_start_failure_degrades_to_event(tmp_path, monkeypatch):
+    """逐帧轮询器启动抛异常：同样降级为事件，采集闭环照常。"""
+    kit = _counting_kit(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise ConnectionError("reset 前断连")
+
+    monkeypatch.setattr(kit, "_start_frame_poll", boom)
+
+    with kit.collect(
+        target="tv.danmaku.bili", items=["CPU"], frame_poll=True,
+        host_run_id="run-frame-fail",
+    ) as scope:
+        pass
+
+    report = scope.finalize()
+
+    warnings = [e for e in report["events"] if e["kind"] == "setup_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["detail"]["component"] == "frame_poll"
+
+
+def test_solo_stop_failure_still_runs_remaining_restores(tmp_path, monkeypatch):
+    """SoloPi stop 抛异常：前台守卫与监听回收先走完，异常原样抛出（P1-07）。"""
+    backend = FakeHarnessBackend()
+    kit = _counting_kit(tmp_path, backend)
+    guard_calls: list[str] = []
+    monkeypatch.setattr(kit, "_guard_foreground",
+                        lambda scope, *, phase: guard_calls.append(phase))
+
+    def stop_boom(session_id, output_dir):
+        raise TimeoutError("adb stop 超时")
+
+    backend.stop = stop_boom
+    with pytest.raises(TimeoutError):  # finalize 在 __exit__ 内执行，异常随 with 退出传播
+        with kit.collect(
+            target="tv.danmaku.bili", items=["CPU"], host_run_id="run-stop-fail"
+        ) as scope:  # noqa: F841 - 失败报告断言需要 scope.report
+            pass
+
+    assert "after_stop" in guard_calls  # SoloPi stop 失败后守卫仍执行
+    assert len(backend.started) == 1
+    # P1-07 复核缺口：停止失败也必须留下失败报告与事件证据
+    assert (tmp_path / "runs" / "run-stop-fail" / "report.json").is_file()
+    assert (tmp_path / "runs" / "run-stop-fail" / "report.html").is_file()
+    failures = [e for e in scope.report["events"] if e["kind"] == "collect_error"]
+    assert len(failures) == 1
+    assert failures[0]["detail"]["component"] == "solopi_stop"
+    assert "adb stop 超时" in failures[0]["detail"]["reason"]
+
+
+def test_supplement_poller_stop_failure_does_not_block_net_restore(
+    tmp_path, monkeypatch
+):
+    """补采轮询器停止抛异常：弱网恢复照常执行，失败记 setup_warning 事件。"""
+    kit = _counting_kit(tmp_path)
+    net_stopped: list[bool] = []
+
+    class BoomPoller:
+        def stop(self):
+            raise ConnectionError("轮询停止断连")
+
+    monkeypatch.setattr(
+        kit, "_start_supplement",
+        lambda *a, **kw: BoomPoller(),
+    )
+
+    from types import SimpleNamespace
+
+    import mobile_perf.netprof as netprof_module
+
+    fake_session = SimpleNamespace(
+        as_dict=lambda: {"tier": "passthrough", "restored": {}},
+        profile=None, tier=netprof_module.TIER_PASSTHROUGH, applied=False,
+        effective=False, api_effective=False,
+        not_tested_reason=None, api_not_tested_reason=None, hint=None,
+        trust=netprof_module.TRUST_UNKNOWN,
+        log_summary=netprof_module.ProxyLogSummary(),
+    )
+
+    class FakeNetProfiler:
+        def stop(self):
+            net_stopped.append(True)
+            return fake_session
+
+    with kit.collect(
+        target="tv.danmaku.bili", items=["CPU"], supplement=True,
+        net_tier="none", host_run_id="run-poller-fail",
+    ) as scope:
+        scope._net_profiler = FakeNetProfiler()
+
+    report = scope.finalize()
+
+    assert net_stopped == [True]  # 补采停止失败未阻断弱网恢复
+    warnings = [e for e in report["events"] if e["kind"] == "setup_warning"]
+    assert any(w["detail"]["component"] == "supplement_stop" for w in warnings)

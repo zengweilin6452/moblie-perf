@@ -68,7 +68,10 @@ MOBILE_PERF_MITMDUMP=<repo>/.scratch/venv-mitm/Scripts/mitmdump.exe \
 - 报告 JSON/HTML 不内嵌 HAR 正文或敏感原值；`report.json` 的
   `network.har` 只保留状态、条目数、大小、脱敏/截断/降级原因；
 - 报告不包含性能曲线时，不要把它误读为性能采集完成：`items=HAR` 的验收
-  报告只证明抓包链路，不产生 CPU/内存/FPS 指标。
+  报告只证明抓包链路，不产生 CPU/内存/FPS 指标；
+- 限额触发时核对计数口径：`countersSource="writer_state"` 时
+  `droppedEntries`/`writerErrors` 是状态文件精确值；`"proxy_log"` 为节流日志
+  推算（下界）；`droppedEvents` 是节流事件条数，不是丢弃条目数。
 
 ## 5. 已知边界
 

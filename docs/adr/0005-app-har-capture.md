@@ -46,10 +46,16 @@
 ## 后果
 
 - 优点：Windows 硬终止不丢已 flush 的条目；内存占用与会话长度解耦；默认脱敏
-  与正文口径可控；HAR 合成失败不影响采集闭环，失败原因可追溯。
+  与正文口径可控；HAR 合成失败不影响采集闭环，失败原因可追溯；合成以代理
+  进程**确认终止**为前提（`_proxy_confirmed_stopped`），终止失败时延迟到
+  下一次 `stop()`，不会产出漏掉续写条目的截断快照。
 - 代价：多一个 JSONL 中间文件（与最终 HAR 同在 `network/` 下）；entry 结构需
-  自己维护 HAR 1.2 兼容性；限额统计需从代理日志的 `har_dropped`/`har_error`
-  事件还原（addon 被终止后其内存计数器不可读）。
+  自己维护 HAR 1.2 兼容性；限额统计从代理日志的 `har_dropped`/`har_error` 事件
+  还原，并辅以 writer 旁路状态文件（`app.har.entries.jsonl.state.json`，每次
+  丢弃/写失败经常驻句柄就地重写并 flush）——节流日志在窗口内推不出精确
+  计数，状态文件给出精确值
+  （`countersSource="writer_state"`），无状态文件时（旧 run/状态损坏）退回日志
+  推算，此时 `droppedEntries`/`writerErrors` 是下界（`countersSource="proxy_log"`）。
 - 兼容性：默认关闭时无 HAR 环境变量、无新文件、`network` 段形状与旧 run 一致；
   旧 run 无 `har` 键时报告输出零变化。
 

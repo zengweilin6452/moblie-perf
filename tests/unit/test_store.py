@@ -1,9 +1,11 @@
 """store 骨架的单元测试：WAL、busy_timeout、会话记录往返。"""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+from mobile_perf import store as store_module
 from mobile_perf.store import PerfStore
 
 
@@ -525,5 +527,158 @@ def test_old_db_without_net_profile_column_is_migrated(tmp_path):
             }
         )
         assert store.fetch_session("r-new")["net_profile"] == {"name": "weak"}
+    finally:
+        store.close()
+
+
+# ---- P1-05：REPLACE 级联、备份恢复、迁移版本与异常退出自检 ----
+
+def test_rerecord_session_keeps_metrics_and_events(store):
+    """同 run_id 重写 session 不得级联清空 metrics/events。
+
+    修复前 INSERT OR REPLACE 先删冲突行，ON DELETE CASCADE 静默清空子表
+    （实测 1 metrics + 1 events → 0 + 0）；UPSERT 只更新列，子表保留。
+    """
+    store.record_session({"run_id": "r1", "target": "tv.danmaku.bili", "status": "running"})
+    store.record_metrics("r1", [{"metric_key": "cpu_process_pct", "median": 12.5}])
+    store.record_event("r1", kind="mark", detail={"label": "x"})
+
+    store.record_session({"run_id": "r1", "target": "tv.danmaku.bili", "status": "stopped"})
+
+    assert len(store.fetch_metrics("r1")) == 1
+    assert len(store.fetch_events("r1")) == 1
+    assert store.fetch_session("r1")["status"] == "stopped"
+
+
+def test_backup_to_restores_every_table_independently(tmp_path, store):
+    """Backup API 快照含 WAL 中已提交数据，四张表逐一对得上（P1-05）。"""
+    store.record_session({"run_id": "r1", "target": "tv.danmaku.bili"})
+    store.record_metrics("r1", [{"metric_key": "fps_frame", "median": 55.0}])
+    store.record_event("r1", kind="mark", detail={"label": "mid"})
+    store.record_baseline(name="b1", metric_key="fps_frame", value=55.0)
+    store.record_run_artifacts("r1", ["runs/r1/artifacts"])
+    # 关闭 autocheckpoint：已提交数据只留在 -wal，主 DB 文件保持陈旧
+    store._conn.execute("PRAGMA wal_autocheckpoint = 0")
+
+    backup = store.backup_to(tmp_path / "backup.db")
+
+    fresh = PerfStore(backup)
+    assert fresh.fetch_session("r1")["run_id"] == "r1"
+    assert [m["metric_key"] for m in fresh.fetch_metrics("r1")] == ["fps_frame"]
+    assert [e["kind"] for e in fresh.fetch_events("r1")] == ["mark"]
+    assert fresh.fetch_baseline("b1")[0]["value"] == 55.0
+    assert fresh.fetch_run_artifacts("r1")[0]["dir_uri"] == "runs/r1/artifacts"
+    assert fresh.integrity_check() == "ok"
+
+    # 对照：只复制主 DB 文件在未 checkpoint 时拿不到数据——这就是必须用
+    # Backup API 的原因（不做强断言，checkpoint 时机随实现而定）
+    stale_copy = tmp_path / "file-copy.db"
+    stale_copy.write_bytes(store.db_path.read_bytes())
+    with sqlite3.connect(stale_copy) as raw:
+        tables = {
+            row[0]
+            for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "sessions" in tables:
+            assert raw.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_backup_overwrites_existing_target(tmp_path, store):
+    """对已存在的目标文件重复备份：结果为最新快照，不残留旧数据。"""
+    store.record_session({"run_id": "r-old", "target": "tv.danmaku.bili"})
+    target = store.backup_to(tmp_path / "backup.db")
+    store.delete_run("r-old")
+    store.record_session({"run_id": "r-new", "target": "tv.danmaku.bili"})
+
+    store.backup_to(target)
+
+    fresh = PerfStore(target)
+    assert fresh.run_ids() == ["r-new"]
+
+
+_LEGACY_SCHEMA = """
+CREATE TABLE sessions (
+    run_id TEXT PRIMARY KEY, solo_session_id TEXT, serial TEXT,
+    device_profile TEXT, target_pkg TEXT, target_version TEXT,
+    items_json TEXT, started_at TEXT, stopped_at TEXT, duration_s REAL,
+    sample_count INTEGER, host_run_id TEXT, clock_offset_ms INTEGER,
+    status TEXT, run_dir TEXT
+);
+CREATE TABLE metrics (
+    run_id TEXT NOT NULL REFERENCES sessions(run_id) ON DELETE CASCADE,
+    metric_key TEXT NOT NULL, unit TEXT, source TEXT, min REAL, median REAL,
+    mean REAL, max REAL, p90 REAL, sample_count INTEGER,
+    PRIMARY KEY (run_id, metric_key)
+);
+"""
+
+
+def test_legacy_db_migrates_to_current_version_and_keeps_data(tmp_path):
+    """v0 旧库（缺 net_profile）重开即迁移：数据保留、版本推进（P1-05）。"""
+    db = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(_LEGACY_SCHEMA)
+    conn.execute(
+        "INSERT INTO sessions (run_id, target_pkg) VALUES ('legacy-1', 'tv.danmaku.bili')"
+    )
+    conn.execute(
+        "INSERT INTO metrics (run_id, metric_key, median) VALUES ('legacy-1', 'fps_frame', 55.0)"
+    )
+    conn.commit()
+    conn.close()
+    assert conn is not None
+
+    store = PerfStore(db)  # 首次重开：执行 v0 → v1 迁移
+    try:
+        assert store.integrity_check() == "ok"
+        assert int(
+            store._conn.execute("PRAGMA user_version").fetchone()[0]
+        ) == store_module._SCHEMA_USER_VERSION
+        # 旧数据原样保留
+        assert store.fetch_session("legacy-1")["target_pkg"] == "tv.danmaku.bili"
+        assert store.fetch_metrics("legacy-1")[0]["metric_key"] == "fps_frame"
+        # 新列可用：迁移后能写入 net_profile 并读回
+        store.record_session({"run_id": "legacy-1", "target": "tv.danmaku.bili",
+                              "net_profile": {"name": "3g"}})
+        assert store.fetch_session("legacy-1")["net_profile"] == {"name": "3g"}
+    finally:
+        store.close()
+
+    again = PerfStore(db)  # 重复打开：迁移幂等，不重复加列不报错
+    try:
+        assert int(
+            again._conn.execute("PRAGMA user_version").fetchone()[0]
+        ) == store_module._SCHEMA_USER_VERSION
+        assert again.fetch_session("legacy-1")["net_profile"] == {"name": "3g"}
+    finally:
+        again.close()
+
+
+def test_integrity_check_after_abnormal_exit(tmp_path):
+    """子进程提交后 os._exit 硬退出：重开自检 ok、已提交数据完好（P1-05）。"""
+    import subprocess
+    import sys as _sys
+
+    from mobile_perf import store as store_module
+
+    src_root = str(Path(store_module.__file__).resolve().parent.parent)
+    db = tmp_path / "crash.sqlite"
+    script = (
+        "import os, sys;"
+        f"sys.path.insert(0, {src_root!r});"
+        "from mobile_perf.store import PerfStore;"
+        f"s = PerfStore({str(db)!r});"
+        "s.record_session({'run_id': 'crash-1', 'target': 'app'});"
+        "s.record_event('crash-1', kind='mark', detail={'label': 'kept'});"
+        "os._exit(1)"  # 模拟强杀：不 close、不 checkpoint，WAL 原样留存
+    )
+    proc = subprocess.run([_sys.executable, "-c", script], timeout=60)
+    assert proc.returncode == 1
+
+    store = PerfStore(db)
+    try:
+        assert store.integrity_check() == "ok"
+        assert store.fetch_session("crash-1")["run_id"] == "crash-1"
+        assert [e["kind"] for e in store.fetch_events("crash-1")] == ["mark"]
     finally:
         store.close()

@@ -237,6 +237,9 @@ class CollectScope:
         self._frame_poller: Any | None = None
         self._watcher: Any | None = None
         self._watch_warnings: list[dict[str, Any]] = []
+        # 启动期辅助组件（补采/逐帧）构造或启动失败（P1-07）：降级为事件，
+        # 不让 __enter__ 中断把已启动的 SoloPi 会话悬挂
+        self._setup_warnings: list[dict[str, Any]] = []
         self.foreground_before: dict[str, Any] | None = None
         self.foreground_events: list[dict[str, Any]] = []
         self.startup: startup_module.StartupResult | None = None
@@ -306,19 +309,27 @@ class CollectScope:
         )
         self._session.start()
         kit._supplement_offset = (0.0, "assumed")
-        self._poller = kit._start_supplement(
-            self._supplement, self._supplement_interval_s, self.target
-        )
+        try:
+            self._poller = kit._start_supplement(
+                self._supplement, self._supplement_interval_s, self.target
+            )
+        except Exception as exc:  # noqa: BLE001 - 补采失败只降级，不悬挂 SoloPi 会话（P1-07）
+            self._poller = None
+            self._setup_warnings.append({"component": "supplement", "reason": str(exc)})
         # 逐帧采集（ticket 15）：reset 清零窗口后按间隔增量读 framestats，
         # 独立线程、不持 gate 设备权；失败如实降级为事件，不阻断采集闭环
-        self._frame_poller = kit._start_frame_poll(
-            self._frame_poll,
-            self._frame_interval_s,
-            self.target,
-            # 与页面打标同一条时间轴（会话相对秒）：锚点的宿主侧若不是这个
-            # 口径，换算出来的帧时刻就落在另一个时间原点，整页耗时会整段偏
-            elapsed=self._session.elapsed_s,
-        )
+        try:
+            self._frame_poller = kit._start_frame_poll(
+                self._frame_poll,
+                self._frame_interval_s,
+                self.target,
+                # 与页面打标同一条时间轴（会话相对秒）：锚点的宿主侧若不是这个
+                # 口径，换算出来的帧时刻就落在另一个时间原点，整页耗时会整段偏
+                elapsed=self._session.elapsed_s,
+            )
+        except Exception as exc:  # noqa: BLE001 - 逐帧失败只降级，不悬挂 SoloPi 会话（P1-07）
+            self._frame_poller = None
+            self._setup_warnings.append({"component": "frame_poll", "reason": str(exc)})
         self._watcher = kit._start_crash_watch(self.target, self._watch_warnings)
         kit._guard_foreground(self, phase="after_start")
         # 启动编排（ticket 12）：发生在 SoloPi 采集窗口内，启动期资源曲线
@@ -351,6 +362,63 @@ class CollectScope:
             logger.warning("启动编排（%s）失败: %s", mode, result.error)
         return result
 
+    def _write_failure_report(self, kit, error: Exception) -> None:
+        """SoloPi 停止失败也产出最小失败报告与事件证据（P1-07 复核缺口）。
+
+        正常链路依赖 SessionRecord（产物校验/聚合/归档），停止失败时这些都不
+        存在；此处只产出会话级最小报告：``collect_error`` 事件入统一时间轴、
+        ``status=failed`` 的 session 行、report.json/report.html 落盘——
+        一次失败的性能采集不能完全没有失败报告。异常随后仍由 finalize 抛出。
+        """
+        store = kit.store
+        # 先落 session 行再落事件：events.run_id 外键引用 sessions，
+        # 顺序反了会触发外键约束失败（P1-07 复核修复时实测踩坑）
+        try:
+            store.record_session(
+                {
+                    "run_id": self._run_id,
+                    "target": self.target,
+                    "items": self.items,
+                    "serial": kit.serial,
+                    "started_at": (self._session.started_at if self._session else None) or "",
+                    "duration_s": self._session.elapsed_s() if self._session else None,
+                    "status": "failed",
+                    "run_dir": str(self._run_dir),
+                }
+            )
+        except Exception:  # noqa: BLE001 - session 行入库失败不阻断失败报告落盘
+            logger.exception("run %s 失败 session 行入库失败", self._run_id)
+        try:
+            store.record_event(
+                self._run_id,
+                kind="collect_error",
+                detail={
+                    "component": "solopi_stop",
+                    "reason": str(error),
+                    "errorType": type(error).__name__,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 事件入库失败不阻断失败报告落盘
+            logger.exception("run %s collect_error 事件入库失败", self._run_id)
+        meta = {
+            "runId": self._run_id,
+            "target": self.target,
+            "items": self.items,
+            "serial": kit.serial,
+            "startedAt": (self._session.started_at if self._session else None) or "",
+            "stoppedAt": (self._session._now() if self._session else None) or "",
+            "durationS": self._session.elapsed_s() if self._session else None,
+        }
+        report = report_module.build_report(
+            meta=meta,
+            record={},
+            artifacts=[],
+            events=store.fetch_events(self._run_id),
+        )
+        report_module.write_report(self._run_dir, report)
+        report_module.write_html(self._run_dir, report)
+        self.report = report
+
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.finalize()
         return False  # 块内异常原样传播；报告已在 finalize 产出
@@ -364,22 +432,42 @@ class CollectScope:
         supplement_result = None
         frame_result = None
         # 先停补采/逐帧轮询再停端侧采集：两者窗口与 SoloPi 采集窗口对齐，
-        # 也避免 stop/pull 借用设备期间继续旁路 dumpsys
+        # 也避免 stop/pull 借用设备期间继续旁路 dumpsys。
+        # 两者的停止彼此独立（P1-07）：单边失败记事件，不阻断后续设备恢复
         if self._poller is not None:
-            supplement_result = self._poller.stop()
+            try:
+                supplement_result = self._poller.stop()
+            except Exception as exc:  # noqa: BLE001 - 停止失败不阻断设备恢复
+                self._setup_warnings.append(
+                    {"component": "supplement_stop", "reason": str(exc)}
+                )
         if self._frame_poller is not None:
-            frame_result = self._frame_poller.stop()
+            try:
+                frame_result = self._frame_poller.stop()
+            except Exception as exc:  # noqa: BLE001 - 停止失败不阻断设备恢复
+                self._setup_warnings.append(
+                    {"component": "frame_poll_stop", "reason": str(exc)}
+                )
         # 弱网环境必须先恢复再停采集：stop/pull 期间设备仍要能正常联网，
         # 否则 pull 会被自己的代理拖慢甚至失败。恢复结果随 meta 落库。
         net_session = (
             self._net_profiler.stop() if self._net_profiler is not None else None
         )
+        # SoloPi 停止失败（超时/断连）不跳过剩余恢复：前台守卫与监听回收
+        # 先走完，异常再原样抛给宿主（P1-07：恢复独立，失败不吞）
+        session_stop_error: Exception | None = None
         try:
             record = self._session.stop(str(self._artifacts_dir))
+        except Exception as exc:  # noqa: BLE001 - 走完剩余恢复后再抛
+            record = None
+            session_stop_error = exc
         finally:
             # 监听是旁路进程：采集停止后立即回收，不悬挂
             watch_events = kit._stop_crash_watch(self._watcher)
         kit._guard_foreground(self, phase="after_stop")
+        if session_stop_error is not None:
+            self._write_failure_report(kit, session_stop_error)
+            raise session_stop_error
 
         artifact_files = collector.validate_artifacts(self._artifacts_dir)
 
@@ -884,6 +972,9 @@ class CollectScope:
             )
         for warning in self._watch_warnings:
             store.record_event(self._run_id, kind="logwatch_warning", detail=dict(warning))
+        # 启动期组件失败（P1-07）：补采/逐帧起不来如实入事件，采集闭环照常
+        for warning in self._setup_warnings:
+            store.record_event(self._run_id, kind="setup_warning", detail=dict(warning))
         # keeper 巡检事件入统一时间轴（A2）：clock_offset/accessibility_needs_attention/
         # tcpip_heal/foreground 等以现有 kind 关联本 run 入库，随报告返回
         readiness = kit.last_readiness

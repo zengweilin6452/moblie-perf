@@ -57,6 +57,7 @@ from .har_writer import (
     CaptureOptions,
     HarSummary,
     compose_har,
+    read_writer_state,
 )
 
 # 内置档位预设：延迟(ms) / 下行(kbps) / 上行(kbps) / 丢包(%)
@@ -100,6 +101,16 @@ DEFAULT_PROBE_TIMEOUT_S = 30.0
 # 代理侧日志文件名与 addon 脚本（随包分发，由独立解释器加载）
 ADDON_FILENAME = "netproxy_addon.py"
 LOG_FILENAME = "net_proxy.jsonl"
+
+# mobile_perf 交给 mitmproxy 子进程的环境变量全集（P0-02）：spawn 时先全部
+# 清除再按当前 run 的开关写入；addon 侧只读这几个名字，新增须同步维护
+_MANAGED_PROXY_ENV_KEYS = (
+    "MOBILE_PERF_NETPARAMS",
+    "MOBILE_PERF_NETTIER",
+    "MOBILE_PERF_NETLOG",
+    "MOBILE_PERF_HAR",
+    "MOBILE_PERF_HAR_ENTRIES",
+)
 
 # 证据三态：observed=代理侧看到连接；none=代理起来了但没流量；unavailable=代理未起
 EVIDENCE_OBSERVED = "observed"
@@ -534,8 +545,22 @@ def read_har_log_stats(path: str | os.PathLike[str] | None) -> dict[str, Any]:
 
     addon 进程被 terminate 后其内存计数器不可读，但 ``har_dropped`` /
     ``har_error`` 事件已逐行落进 ``net_proxy.jsonl``，据此如实还原。
+
+    口径（P0-03/P0-04）：``dropped``/``errors`` 优先取事件里的**累计数**
+    （``dropped``/``errors`` 字段，首次与每累计 100 条时落事件）——那是事件
+    发出时刻的真实累计；无该字段的旧格式退化为按事件条数计数。两者都可能
+    小于真实总量（节流窗口内的增量没有落日志），精确值以 writer 状态文件
+    （``read_writer_state``）为准；``droppedEvents``/``errorEvents`` 始终是
+    日志事件条数，与条目数不是同一口径。
     """
-    stats: dict[str, Any] = {"dropped": 0, "errors": 0, "reason": None, "initErrors": []}
+    stats: dict[str, Any] = {
+        "dropped": 0,
+        "droppedEvents": 0,
+        "errors": 0,
+        "errorEvents": 0,
+        "reason": None,
+        "initErrors": [],
+    }
     if not path:
         return stats
     try:
@@ -551,6 +576,7 @@ def read_har_log_stats(path: str | os.PathLike[str] | None) -> dict[str, Any]:
                 if not isinstance(record, dict):
                     continue
                 if record.get("ev") == "har_dropped":
+                    stats["droppedEvents"] += 1
                     # 新事件带累计数 dropped（1,100,200...）；旧格式没有该字段时
                     # 退化为按事件条数计数，两种日志都能如实还原。
                     reported = record.get("dropped")
@@ -561,7 +587,14 @@ def read_har_log_stats(path: str | os.PathLike[str] | None) -> dict[str, Any]:
                     if stats["reason"] is None:
                         stats["reason"] = record.get("reason")
                 elif record.get("ev") == "har_error":
-                    stats["errors"] += 1
+                    stats["errorEvents"] += 1
+                    # 运行时写失败事件同样带累计数（节流）；init 失败只发生一次、
+                    # 无累计字段，仍按事件计数（并单独归入 initErrors）
+                    reported = record.get("errors")
+                    if isinstance(reported, int) and not isinstance(reported, bool):
+                        stats["errors"] = max(stats["errors"], reported)
+                    else:
+                        stats["errors"] += 1
                     message = str(record.get("error") or "")
                     if message.startswith("init:") and message not in stats["initErrors"]:
                         stats["initErrors"].append(message)
@@ -599,6 +632,9 @@ class NetSession:
     reverse_set: bool = False
     proxy_set: bool = False
     setup_errors: list[str] = field(default_factory=list)
+    # 恢复阶段的失败（P1-07）：设备断连等导致某步清理失败时逐条记录，
+    # 随会话进报告；残留项由下一次 netprof doctor 兜底
+    restore_errors: list[str] = field(default_factory=list)
     restored: dict[str, Any] = field(default_factory=dict)
     log_summary: ProxyLogSummary = field(default_factory=ProxyLogSummary)
     log_path: str | None = None
@@ -687,6 +723,7 @@ class NetSession:
             ),
             "proxy": self.log_summary.as_dict(),
             "setupErrors": list(self.setup_errors),
+            "restoreErrors": list(self.restore_errors),
             "restored": dict(self.restored),
             "logPath": self.log_path,
         }
@@ -752,6 +789,10 @@ class NetProfiler:
         self._har_path: str | None = None
         self._har_entries_path: str | None = None
         self._har_composed = False
+        # 代理进程是否已确认终止（复核缺口）：初始无进程视为已确认；
+        # spawn 成功后翻为 False，_stop_proxy 确认成功后才回到 True。
+        # 未确认终止前不得合成 HAR——进程还在写条目，合成会漏掉后续增量
+        self._proxy_confirmed_stopped = True
 
     # ---- 可用性 ----
 
@@ -783,6 +824,7 @@ class NetProfiler:
             raise NetProfileError("网络剖面已在运行，不能重复 start")
         self._profile = profile
         self._har_composed = False
+        self._proxy_confirmed_stopped = True  # 新 start 尚无进程在跑
         self._log_path = None
         self._har_path = None
         self._har_entries_path = None
@@ -841,9 +883,17 @@ class NetProfiler:
         except Exception as exc:  # noqa: BLE001 - 起代理失败要如实回滚
             self._session.setup_errors.append(f"代理启动失败: {exc}")
             self._mark_har_not_tested(f"代理启动失败: {exc}")
-            self._stop_proxy()
+            # _spawn_proxy 可能已创建进程（启动等待失败）：清理成功才释放引用并
+            # 确认终止；清理失败保留状态与引用，允许后续 stop() 重试（复核缺口）
+            if self._stop_proxy():
+                self._session.proxy_started = False
+                self._proxy_confirmed_stopped = True
+                self._process = None
+            else:
+                self._session.restore_errors.append(
+                    "代理进程终止失败：进程引用已保留，可重试 stop() 或手动结束"
+                )
             return self._session
-        self._session.proxy_started = True
 
         if not self._set_reverse(True):
             self._session.setup_errors.append("adb reverse 建立失败")
@@ -863,17 +913,69 @@ class NetProfiler:
         return self._session
 
     def stop(self) -> NetSession:
-        """恢复网络环境、回收代理，并以代理侧日志判定是否真的生效；幂等。"""
+        """恢复网络环境、回收代理，并以代理侧日志判定是否真的生效；幂等。
+
+        恢复动作彼此独立执行（P1-07）：设备断连等导致某步失败时，其余步骤
+        照常执行、失败如实记入 ``restore_errors`` 进报告；设备是否残留由
+        下一次 ``netprof doctor`` 复检兜底。
+        """
         if self._profile is None:
             return self._session
-        self._session.restored = {
-            "deviceProxy": self._set_device_proxy(False) if self._session.proxy_set else None,
-            "reverse": self._set_reverse(False) if self._session.reverse_set else None,
-            "proxyProcess": self._stop_proxy() if self._session.proxy_started else None,
-        }
+        # 幂等重入保留上一次恢复结论：只有本次真正执行了恢复步骤才改写对应键
+        restored: dict[str, Any] = dict(self._session.restored)
+        restore_errors = self._session.restore_errors
+        # 证据判定以"本次是否真的跑过代理"为准：代理标志在恢复步骤中会被解除，
+        # 必须先留快照（P1-07 修复时引入的顺序依赖）
+        proxy_was_started = self._session.proxy_started
+        # 恢复动作彼此独立执行（P1-07）；异常与非零返回码都算失败并如实记录，
+        # 失败的步骤**不解除待恢复状态**，下一次 stop() 可重试（进程引用同样保留）
+        if self._session.proxy_set:
+            try:
+                ok = self._set_device_proxy(False)
+                if not ok:
+                    restore_errors.append(
+                        "恢复系统代理失败：adb 返回非零，设备可能残留代理设置"
+                        "（可由下一次 netprof doctor 复检清理）"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 清理失败不阻断其余清理
+                ok = False
+                restore_errors.append(f"恢复系统代理失败: {exc}")
+            restored["deviceProxy"] = ok
+            if ok:
+                self._session.proxy_set = False
+        if self._session.reverse_set:
+            try:
+                ok = self._set_reverse(False)
+                if not ok:
+                    restore_errors.append(
+                        "恢复 reverse 失败：adb 返回非零，设备可能残留 reverse"
+                        "（可由下一次 netprof doctor 复检清理）"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 清理失败不阻断其余清理
+                ok = False
+                restore_errors.append(f"恢复 reverse 失败: {exc}")
+            restored["reverse"] = ok
+            if ok:
+                self._session.reverse_set = False
+        if self._session.proxy_started:
+            try:
+                ok = self._stop_proxy()
+                if not ok:
+                    restore_errors.append(
+                        "代理进程终止失败：进程引用已保留，可重试 stop() 或手动结束"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 清理失败不阻断其余清理
+                ok = False
+                restore_errors.append(f"代理进程终止失败: {exc}")
+            restored["proxyProcess"] = ok
+            if ok:
+                self._session.proxy_started = False
+                self._process = None  # 仅在确认终止后丢弃进程引用（P1-07）
+                self._proxy_confirmed_stopped = True
+        self._session.restored = restored
         # 只有真起过代理才用日志判定证据：none 档在无 mitmproxy 时按"无整形即
         # 无需证明"记 observed，不能被一份不存在的日志覆盖成 none
-        if self._log_path and self._session.proxy_started:
+        if self._log_path and proxy_was_started:
             self._session.log_summary = read_proxy_log(self._log_path)
             if self._session.applied:
                 self._session.evidence = self._session.log_summary.evidence
@@ -883,13 +985,18 @@ class NetProfiler:
                     self._session.trust_error = self._session.log_summary.trust_error
         # 设备恢复与进程终止之后才合成 HAR：不依赖 mitmproxy 的 done()，
         # 已 flush 的 JSONL 行不会因 terminate 丢失。stop() 幂等，只合成一次。
-        if self._capture.enabled and not self._har_composed:
+        # 终止失败时**不得**合成（复核缺口）：进程还在写条目，此时合成既漏掉
+        # 后续增量、又用 _har_composed=True 挡住二次 stop 的重合成——数据丢失；
+        # 确认终止后（含首次就成功/从未启动/spawn 失败已清理）才执行合成。
+        if (
+            self._capture.enabled
+            and not self._har_composed
+            and self._proxy_confirmed_stopped
+        ):
             self._compose_har()
         self._session.stopped_at = self._now()
-        self._session.proxy_set = False
-        self._session.reverse_set = False
-        self._session.proxy_started = False
-        self._process = None
+        # 待恢复状态的解除已按步骤在上方完成：失败的步骤保留状态与进程引用，
+        # 允许下一次 stop() 重试（P1-07），不再无条件清空
         return self._session
 
     # ---- HAR 合成 ----
@@ -928,21 +1035,39 @@ class NetProfiler:
         )
 
     def _compose_har(self) -> None:
-        """流式合成 app.har；零有效条目不创建文件，证书拒绝时仅明文为 partial。"""
-        self._har_composed = True
+        """流式合成 app.har；零有效条目不创建文件，证书拒绝时仅明文为 partial。
+
+        ``_har_composed`` 只在真正执行过合成流程后置位：无可合成对象（har
+        缺失/路径缺失）时保持 False，不阻塞后续 stop 的重试。
+        """
         har = self._session.har
         if har is None or not self._har_entries_path or not self._har_path:
             return
+        self._har_composed = True
         stats = read_har_log_stats(self._log_path)
+        # 计数口径：writer 状态文件（常驻句柄逐次就地重写）优先——节流日志在
+        # 窗口内（如丢弃 23 条只落 dropped=1 一条事件）推不出精确值（P0-03/P0-04）
+        writer_state = read_writer_state(self._har_entries_path)
+        dropped = stats["dropped"]
+        writer_errors = stats["errors"]
+        counters_source = "proxy_log"
+        truncated_reason = stats["reason"]
+        if writer_state is not None:
+            dropped = max(dropped, writer_state["droppedEntries"])
+            writer_errors = max(writer_errors, writer_state["writerErrors"])
+            truncated_reason = truncated_reason or writer_state["truncatedReason"]
+            counters_source = "writer_state"
         meta = {
             "enabled": True,
             "status": STATUS_COMPLETE,
             "bodyMode": self._capture.body_mode,
             "redacted": self._capture.redact,
-            "droppedEntries": stats["dropped"],
-            "truncated": bool(stats["dropped"]),
-            "truncatedReason": stats["reason"],
-            "writerErrors": stats["errors"],
+            "droppedEntries": dropped,
+            "droppedEvents": stats["droppedEvents"],
+            "truncated": bool(dropped),
+            "truncatedReason": truncated_reason,
+            "writerErrors": writer_errors,
+            "countersSource": counters_source,
             "httpsCoverage": "none",
         }
         summary = compose_har(self._har_entries_path, self._har_path, meta=meta)
@@ -991,6 +1116,12 @@ class NetProfiler:
         if not addon.is_file():
             raise NetProfileError(f"整形 addon 缺失: {addon}")
         environment = dict(os.environ if self._env is None else self._env)
+        # P0-02：先清除 mobile_perf 管理的 HAR 变量，再按当前 run 的开关写入。
+        # 外层终端/CI 残留的 MOBILE_PERF_HAR 会让关闭抓包的 run 在 addon 里
+        # 误创建 HAR writer，把数据写进别的 run 的路径（破坏默认关闭的隔离）。
+        # NETPARAMS/NETTIER/NETLOG 下方无条件覆盖，不受残留影响。
+        for key in _MANAGED_PROXY_ENV_KEYS:
+            environment.pop(key, None)
         environment["MOBILE_PERF_NETPARAMS"] = json.dumps(
             {key: getattr(self._profile, key) for key in _PARAM_KEYS}
         )
@@ -1026,6 +1157,11 @@ class NetProfiler:
         self._process = self._popen(
             args, stdout=log, stderr=subprocess.STDOUT, text=True, env=environment
         )
+        # Popen 已创建进程：立即进入"已启动、终止未确认"状态（复核缺口）。
+        # 此后的启动等待失败不代表进程已死——状态与引用必须保留给 stop() 重试，
+        # 终止确认前不得合成 HAR
+        self._session.proxy_started = True
+        self._proxy_confirmed_stopped = False
         deadline = self._now() + DEFAULT_START_TIMEOUT_S
         while self._now() < deadline:
             if self._process.poll() is not None:
@@ -1051,16 +1187,53 @@ class NetProfiler:
         return True
 
     def _rollback(self) -> None:
-        """start 中途失败：把已做的步骤倒序撤销。"""
+        """start 中途失败：把已做的步骤倒序撤销；单步失败不阻断其余撤销（P1-07）。
+
+        异常与非零返回码都记入 ``restore_errors``；失败的步骤**不解除**待恢复
+        状态（后续 stop() 会重试），只有确认撤销成功才清标志。
+        """
         if self._session.proxy_set:
-            self._set_device_proxy(False)
-            self._session.proxy_set = False
+            try:
+                ok = self._set_device_proxy(False)
+                if not ok:
+                    self._session.restore_errors.append(
+                        "恢复系统代理失败：adb 返回非零，设备可能残留代理设置"
+                        "（可由下一次 netprof doctor 复检清理）"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 撤销失败不阻断其余撤销
+                ok = False
+                self._session.restore_errors.append(f"恢复系统代理失败: {exc}")
+            if ok:
+                self._session.proxy_set = False
         if self._session.reverse_set:
-            self._set_reverse(False)
-            self._session.reverse_set = False
+            try:
+                ok = self._set_reverse(False)
+                if not ok:
+                    self._session.restore_errors.append(
+                        "恢复 reverse 失败：adb 返回非零，设备可能残留 reverse"
+                        "（可由下一次 netprof doctor 复检清理）"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 撤销失败不阻断其余撤销
+                ok = False
+                self._session.restore_errors.append(f"恢复 reverse 失败: {exc}")
+            if ok:
+                self._session.reverse_set = False
         if self._session.proxy_started:
-            self._stop_proxy()
-            self._session.proxy_started = False
+            try:
+                ok = self._stop_proxy()
+                if not ok:
+                    self._session.restore_errors.append(
+                        "代理进程终止失败：进程引用已保留，可重试 stop() 或手动结束"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 撤销失败不阻断其余撤销
+                ok = False
+                self._session.restore_errors.append(f"代理进程终止失败: {exc}")
+            if ok:
+                self._session.proxy_started = False
+                self._process = None
+                # 终止已确认，与 stop()/spawn 清理分支保持同一状态口径（复核缺口）：
+                # 否则该失败会话的合成门永远无法满足，HAR 停在 not_tested 占位
+                self._proxy_confirmed_stopped = True
 
     # ---- 设备侧 ----
 

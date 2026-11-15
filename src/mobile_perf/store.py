@@ -22,6 +22,9 @@ _BUSY_TIMEOUT_MS = 5000
 # journal_mode 切换需要短暂排他锁且不吃 busy_timeout（xdist 多进程同启实测）；
 # 超时前轮询重试，超时后确认模式已是 wal 亦可接受
 _WAL_SWITCH_TIMEOUT_S = 5.0
+# schema 版本（P1-05）：PRAGMA user_version 记录，逐版本迁移见 _MIGRATION_STEPS；
+# 0 = 未登记版本的首批库。新增迁移时递增此值并在 _MIGRATION_STEPS 挂幂等步骤
+_SCHEMA_USER_VERSION = 1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -95,6 +98,17 @@ CREATE TABLE IF NOT EXISTS devices (
 
 _METRIC_FIELDS = ("min", "median", "mean", "max", "p90")
 
+# 逐版本迁移步骤表（P1-05）：键 = 目标版本号，值 = 迁移函数（须幂等）
+_MIGRATION_STEPS: dict[int, Any] = {}
+
+
+def _migration(version: int):
+    def register(func):
+        _MIGRATION_STEPS[version] = func
+        return func
+
+    return register
+
 
 class PerfStore:
     """组件的 SQLite 存储入口；WAL + busy_timeout，xdist 并发已在工单 11 验证。"""
@@ -111,10 +125,23 @@ class PerfStore:
         self._conn.commit()
 
     def _migrate_schema(self) -> None:
-        """旧库加列（工单 20）：sessions.net_profile 在首批库上不存在，补上。
+        """按 PRAGMA user_version 逐版本迁移（P1-05）：可重复执行，不堆叠隐式 ALTER。
 
-        CREATE TABLE IF NOT EXISTS 不会改已有表，只能按 PRAGMA 逐列补。
+        版本 0 表示未登记的首批库（ticket 20 之前，sessions 缺 net_profile 列）。
+        每个版本的迁移必须幂等；user_version 只在该版本迁移成功后推进，
+        中途失败下次重开从旧版本继续，不会跳步。
         """
+        version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        for target in range(version + 1, _SCHEMA_USER_VERSION + 1):
+            migration = _MIGRATION_STEPS.get(target)
+            if migration is not None:
+                migration(self)
+            self._conn.execute(f"PRAGMA user_version = {target}")
+        self._conn.commit()
+
+    @_migration(1)
+    def _migrate_v1(self) -> None:
+        """v0 → v1：sessions 补 net_profile 列（工单 20；CREATE IF NOT EXISTS 不改旧表）。"""
         columns = {
             row[1]
             for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
@@ -144,12 +171,31 @@ class PerfStore:
             raise ValueError("session 记录必须包含 run_id")
         self._conn.execute(
             """
-            INSERT OR REPLACE INTO sessions (
+            -- P1-05：必须用 UPSERT 而不是 INSERT OR REPLACE——metrics/events/
+            -- runs_artifacts 对 sessions 有 ON DELETE CASCADE，REPLACE 会先删
+            -- 冲突行再插入，级联清空该 run 的指标与事件；UPSERT 只更新列。
+            INSERT INTO sessions (
                 run_id, solo_session_id, serial, device_profile, net_profile,
                 target_pkg, target_version, items_json, started_at, stopped_at,
                 duration_s, sample_count, host_run_id, clock_offset_ms, status,
                 run_dir
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                solo_session_id=excluded.solo_session_id,
+                serial=excluded.serial,
+                device_profile=excluded.device_profile,
+                net_profile=excluded.net_profile,
+                target_pkg=excluded.target_pkg,
+                target_version=excluded.target_version,
+                items_json=excluded.items_json,
+                started_at=excluded.started_at,
+                stopped_at=excluded.stopped_at,
+                duration_s=excluded.duration_s,
+                sample_count=excluded.sample_count,
+                host_run_id=excluded.host_run_id,
+                clock_offset_ms=excluded.clock_offset_ms,
+                status=excluded.status,
+                run_dir=excluded.run_dir
             """,
             (
                 session["run_id"],
@@ -408,6 +454,26 @@ class PerfStore:
 
     def run_ids(self) -> list[str]:
         return [row[0] for row in self._conn.execute("SELECT run_id FROM sessions")]
+
+    def backup_to(self, target_path: str | Path) -> Path:
+        """用 SQLite Backup API 把当前库完整备份到 target_path，返回目标路径（P1-05）。
+
+        WAL 模式下已提交数据可能还留在 ``-wal`` 文件里，只复制主 DB 文件会
+        静默丢数据；Backup API 由 SQLite 完成页级拷贝（含 WAL 已提交内容），
+        产物是独立的单文件快照，可直接用 PerfStore 打开校验。
+        """
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(target)
+        try:
+            self._conn.backup(dest)
+        finally:
+            dest.close()
+        return target
+
+    def integrity_check(self) -> str:
+        """PRAGMA integrity_check 首行结果（'ok' 为健康）；异常退出后自检用（P1-05）。"""
+        return str(self._conn.execute("PRAGMA integrity_check").fetchone()[0])
 
     def delete_run(self, run_id: str) -> None:
         """删除一个 run 的全部行（sessions 及级联的 metrics/events/runs_artifacts）。"""
